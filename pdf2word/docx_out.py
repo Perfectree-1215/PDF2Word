@@ -29,7 +29,8 @@ _IMG_WIKI = re.compile(r"^!\[\[([^\]|]+)(?:\|[^\]]*)?\]\]\s*$")
 _IMG_MD = re.compile(r"^!\[[^\]]*\]\(([^)]+)\)\s*$")
 _BLOCK_ID = re.compile(r"\s*\^[A-Za-z0-9-]+\s*$")
 _TOKEN = re.compile(
-    r"(\*\*\*.+?\*\*\*|\*\*.+?\*\*|(?<![A-Za-z0-9])_(?!\s)[^_<>|\n]+?_(?![A-Za-z0-9])|\*(?!\s)[^*<>|\n]+?\*"
+    r"(!\[\[[^\]]+\]\]|!\[[^\]]*\]\([^)]+\)"
+    r"|\*\*\*.+?\*\*\*|\*\*.+?\*\*|(?<![A-Za-z0-9])_(?!\s)[^_<>|\n]+?_(?![A-Za-z0-9])|\*(?!\s)[^*<>|\n]+?\*"
     r"|<sup>.*?</sup>|<sub>.*?</sub>|<u>.*?</u>|<mark>.*?</mark>|<(?:i|em)>.*?</(?:i|em)>|<(?:b|strong)>.*?</(?:b|strong)>"
     r"|`[^`]+`|\$[^$\n]+\$|\[\^[^\]]+\])", re.S)
 _STRAY_TAG = re.compile(r"</?(?:u|mark|i|em|b|strong|s|del|span|font)[^>]*>")
@@ -153,8 +154,8 @@ class DocxBuilder:
         self.doc.add_heading(m.title or "Untitled", 0)
         container = getattr(m, "container", "")
         if container:                      # one chapter / page group of a bigger document
-            pages = getattr(m, "part_pages", "")
-            self.doc.add_paragraph(container + (f"  ·  pp. {pages}" if pages else ""))
+            pages = getattr(m, "part_pages", "")          # "p. 201-205 (PDF 249-253)"
+            self.doc.add_paragraph(container + (f"  ·  {pages}" if pages else ""))
         if m.authors:
             self.doc.add_paragraph(", ".join(m.authors))
         bits = []
@@ -406,7 +407,9 @@ class DocxBuilder:
             if m.start() > pos:
                 self._run(p, text[pos:m.start()], **fmt)
             tok = m.group(0)
-            if tok.startswith("***"):
+            if tok.startswith("!["):                  # inline image: a symbol the OCR could not read
+                self._inline_picture(p, tok)
+            elif tok.startswith("***"):
                 self._run(p, tok[3:-3], **dict(fmt, bold=True, italic=True))
             elif tok.startswith("**"):
                 self._runs(p, tok[2:-2], **dict(fmt, bold=True))
@@ -451,6 +454,29 @@ class DocxBuilder:
         if sub:
             r.font.subscript = True
         return r
+
+    def _inline_picture(self, p, tok: str):
+        m = _IMG_WIKI.match(tok) or _IMG_MD.match(tok)
+        path = self._resolve(m.group(1)) if m else None
+        if path is None:
+            return
+        try:
+            from PIL import Image
+            with Image.open(path) as im:
+                dpi = im.info.get("dpi", (0, 0))[1] or 216.0
+                height_cm = im.height / float(dpi) * 2.54
+            height_cm = max(0.15, min(height_cm, 2.0))
+            run = p.add_run()
+            run.add_picture(str(path), height=self._Cm(height_cm))
+            # sit the symbol on the baseline like text: lower it by a fifth of its height
+            from docx.oxml import OxmlElement
+            from docx.oxml.ns import qn
+            pos = OxmlElement("w:position")
+            pos.set(qn("w:val"), str(-int(round(height_cm / 2.54 * 72 * 0.2 * 2))))   # half-points
+            run._r.get_or_add_rPr().append(pos)
+            self.stats["docx_inline_pictures"] = self.stats.get("docx_inline_pictures", 0) + 1
+        except Exception as exc:
+            log.warning("  docx: cannot embed inline %s (%s)", path.name, exc)
 
     def _inline_math(self, p, latex: str):
         omath = self.omml.omml(latex, block=False) if self.omml else None

@@ -52,6 +52,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="file name of one chapter / page group; fields: {stem} {num} {title} {id} {p0} {p1}")
     g.add_argument("--split-pages", type=int, default=0, metavar="N",
                    help="one file per N pages (for PDFs without bookmarks); names {stem}-{num}-p0001-0050")
+    g.add_argument("--subchapters", action="store_true",
+                   help="split every selected entry into its direct sub-entries (one file each); the text "
+                        "between the entry's heading and its first sub-entry becomes a file of its own")
 
     g = p.add_argument_group("metadata")
     g.add_argument("--author", help="override first-author surname")
@@ -70,12 +73,15 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--no-inline-math", action="store_true", help="do not OCR small inline equation images")
     g.add_argument("--no-inline-text-math", action="store_true",
                    help="keep text-layer inline math (rho_f, u_i) as extracted text instead of $...$")
+    g.add_argument("--no-vector-math", action="store_true",
+                   help="do not look for equations and symbols drawn as vector graphics (manuals)")
     g.add_argument("--claude-model", default="claude-opus-5-5")
     g.add_argument("--claude-effort", default="low", choices=["low", "medium", "high"])
     g.add_argument("--no-cache", action="store_true", help="disable the OCR result cache")
 
     g = p.add_argument_group("layout / output")
-    g.add_argument("--pages", help="page range, 1-based, e.g. 1-5,8")
+    g.add_argument("--pages", help="page range in PDF order, 1-based, e.g. 1-5,8; printed page numbers "
+                                   "with a p: p201-205, pxii")
     g.add_argument("--dpi", type=int, default=200, help="figure resolution")
     g.add_argument("--image-links", choices=["wiki", "markdown"], default="wiki",
                    help="![[file]] (Obsidian) or ![](file) (standard)")
@@ -121,14 +127,14 @@ def options_from_args(args) -> Options:
         citations=args.citations, abstract_callout=not args.no_abstract_callout,
         doc_type=args.doc_type, chapters=args.chapters, chapter_split=args.chapter_split,
         chapter_template=args.chapter_template, split_pages=max(0, args.split_pages or 0),
-        chapter_depth=args.chapter_depth,
+        chapter_depth=args.chapter_depth, subchapters=args.subchapters,
         online=not args.offline, author=args.author, year=args.year, title=args.title,
         pages=args.pages, dpi=args.dpi, keep_headers=args.keep_headers,
         keep_picture_text=args.keep_picture_text, ocr_pages=args.ocr_pages, lighten=not args.no_lighten,
         math_engine=args.math_engine, math_zooms=zooms or (2.0, 3.0, 4.0),
         math_max_tokens=args.math_max_tokens, math_mode=args.math_mode,
         inline_image_math=not args.no_inline_math, inline_text_math=not args.no_inline_text_math,
-        claude_model=args.claude_model,
+        vector_math=not args.no_vector_math, claude_model=args.claude_model,
         claude_effort=args.claude_effort, cache=not args.no_cache, verbose=args.verbose,
     )
 
@@ -136,7 +142,7 @@ def options_from_args(args) -> Options:
 def list_chapters(pdfs: list, depth: int) -> int:
     """Print the bookmark tree of each PDF (ids usable with --chapters)."""
     import pymupdf
-    from .outline import format_tree, read_outline
+    from .outline import PageNumbers, format_tree, read_outline
     for pdf in pdfs:
         try:
             doc = pymupdf.open(pdf)
@@ -145,9 +151,10 @@ def list_chapters(pdfs: list, depth: int) -> int:
             continue
         try:
             tree = read_outline(doc)
-            print(f"== {pdf.name}  ({doc.page_count} pages)")
+            numbers = PageNumbers(doc)
+            print(f"== {pdf.name}  ({doc.page_count} pages; printed page numbers: {numbers.source})")
             if tree:
-                print(format_tree(tree, depth))
+                print(format_tree(tree, depth, numbers))
             else:
                 print("   (no bookmarks: use --split-pages N or --pages)")
             print()

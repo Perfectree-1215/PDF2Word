@@ -193,7 +193,10 @@ def flatten(tree: list) -> list:
 
 # ----------------------------------------------------------------------------- listing / selection
 
-def format_tree(tree: list, depth: int = 2) -> str:
+def format_tree(tree: list, depth: int = 2, numbers=None) -> str:
+    """Listing for --list-chapters; with `numbers` (PageNumbers) the printed page numbers are
+    shown first and the PDF page order second."""
+    show_printed = numbers is not None and getattr(numbers, "source", "none") != "none"
     rows = []
     for node in flatten(tree):
         if node.level > depth:
@@ -201,8 +204,14 @@ def format_tree(tree: list, depth: int = 2) -> str:
         hidden = len(list(node.walk())) - 1 if node.level == depth else 0
         indent = "  " * (node.level - 1)
         more = f"  [+{hidden} below]" if hidden else ""
-        rows.append(f"{node.id:>9}  {node.pages_label:>11}  {indent}{node.title}  ({node.page_count} p){more}")
-    head = f"{'id':>9}  {'pages':>11}  title"
+        if show_printed:
+            printed = numbers.printed_range(node.page_from, node.page_to) or "-"
+            rows.append(f"{node.id:>9}  {printed:>11}  {node.pages_label:>11}  {indent}{node.title}"
+                        f"  ({node.page_count} p){more}")
+        else:
+            rows.append(f"{node.id:>9}  {node.pages_label:>11}  {indent}{node.title}  ({node.page_count} p){more}")
+    head = (f"{'id':>9}  {'printed':>11}  {'PDF pages':>11}  title" if show_printed
+            else f"{'id':>9}  {'pages':>11}  title")
     return "\n".join([head] + rows)
 
 
@@ -240,6 +249,161 @@ def select_parts(tree: list, spec: str) -> list:
     order = {id(n): i for i, n in enumerate(nodes)}
     uniq = {id(n): n for n in wanted}
     return sorted(uniq.values(), key=lambda n: order[id(n)])
+
+
+def split_children(doc, part: Part) -> list:
+    """One entry -> its direct sub-entries, each as a part of its own. Text between the entry's
+    heading and its first sub-entry (the chapter introduction) becomes a small part of its own,
+    titled like the entry; an entry without sub-entries is returned unchanged."""
+    if not part.children:
+        return [part]
+    first = part.children[0]
+    out = []
+    intro = Part(title=part.title, page_from=part.page_from, page_to=part.page_from, num=part.num,
+                 width=part.width, id=part.id, level=part.level, kind="chapter", y_hint=part.y_hint)
+    if first.page_from > part.page_from:
+        if _starts_at_top(doc, first):
+            intro.page_to = first.page_from - 1
+        else:
+            intro.page_to = first.page_from
+            intro.end_hint = (first.title, first.y_hint)
+        out.append(intro)
+    elif first.y_hint is not None and (part.y_hint or 0.0) + 60 < first.y_hint:
+        intro.end_hint = (first.title, first.y_hint)       # same page, some text in between
+        out.append(intro)
+    out += list(part.children)
+    return out
+
+
+class PageNumbers:
+    """Printed page numbers: the PDF's page labels when it has them ('xii', '201'), else a
+    constant offset guessed from numbers printed in the headers/footers, else nothing."""
+
+    def __init__(self, doc):
+        self.doc = doc
+        self.count = doc.page_count
+        self._cache: dict = {}
+        self.source = "none"
+        self.offset = 0
+        try:
+            self.has_labels = bool(doc.get_page_labels())
+        except Exception:
+            self.has_labels = False
+        if self.has_labels:
+            self.source = "labels"
+        else:
+            self.offset = self._guess_offset()
+            if self.offset is not None:
+                self.source = "printed"
+        self._index: Optional[dict] = None
+
+    # ---- lookup ---------------------------------------------------------------
+    def label(self, pno: int) -> str:
+        """Printed number of a 0-based page; '' when unknown."""
+        if pno in self._cache:
+            return self._cache[pno]
+        value = ""
+        if self.source == "labels":
+            try:
+                value = (self.doc[pno].get_label() or "").strip()
+            except Exception:
+                value = ""
+        elif self.source == "printed":
+            n = pno + 1 + (self.offset or 0)
+            value = str(n) if n >= 1 else ""
+        self._cache[pno] = value
+        return value
+
+    def describe(self, page_from: int, page_to: int) -> str:
+        """'p. 201-205 (PDF 249-253)', 'p. 6-10' when printed == PDF numbering, 'PDF 249-253' without."""
+        pdf = f"{page_from + 1}-{page_to + 1}" if page_to > page_from else str(page_from + 1)
+        a, b = self.label(page_from), self.label(page_to)
+        if not a or not b:
+            return f"PDF {pdf}"
+        printed = f"{a}-{b}" if page_to > page_from else a
+        if printed == pdf:
+            return f"p. {printed}"
+        return f"p. {printed} (PDF {pdf})"
+
+    def printed_range(self, page_from: int, page_to: int) -> str:
+        a, b = self.label(page_from), self.label(page_to)
+        if not a or not b:
+            return ""
+        return f"{a}-{b}" if page_to > page_from else a
+
+    def index_of(self, printed: str) -> Optional[int]:
+        """0-based page of a printed number ('201', 'xii'); the first page carrying it."""
+        if self._index is None:
+            self._index = {}
+            for pno in range(self.count):
+                lab = self.label(pno)
+                if lab and lab not in self._index:
+                    self._index[lab] = pno
+        return self._index.get(printed.strip().lower()) if printed else None
+
+    # ---- heuristics --------------------------------------------------------------
+    def _guess_offset(self) -> Optional[int]:
+        n = self.count
+        if n < 3:
+            return None
+        sample = sorted({int(round(n * k / 12)) for k in range(1, 12)} | {2, n - 2})
+        offsets: Counter = Counter()
+        seen = 0
+        for pno in sample:
+            if not 0 <= pno < n:
+                continue
+            printed = self._edge_number(self.doc[pno])
+            if printed is None:
+                continue
+            seen += 1
+            offsets[printed - (pno + 1)] += 1
+        if seen < 3 or not offsets:
+            return None
+        offset, votes = offsets.most_common(1)[0]
+        return offset if votes >= max(3, 0.6 * seen) else None
+
+    @staticmethod
+    def _edge_number(page) -> Optional[int]:
+        """A page number printed in the header/footer band ('201', '6 of 23', 'Page 12')."""
+        try:
+            lines = _text_lines(page)
+        except Exception:
+            return None
+        h = page.rect.height
+        for y0, y1, text in lines:
+            if not (y1 < 0.09 * h or y0 > 0.9 * h):
+                continue
+            t = text.strip()
+            m = re.fullmatch(r"(?:page\s*)?(\d{1,4})(?:\s*(?:of|/)\s*\d{1,4})?", t, re.I) or \
+                re.fullmatch(r"[-–—]\s*(\d{1,4})\s*[-–—]", t)
+            if m:
+                return int(m.group(1))
+        return None
+
+
+def parse_pages(spec: Optional[str], doc, numbers: Optional[PageNumbers] = None) -> Optional[list]:
+    """'1-5,8' (PDF order, 1-based) and 'p201-205' / 'pxii' (printed numbers) -> 0-based pages."""
+    from .utils import parse_page_range
+    if not spec:
+        return None
+    plain, pages = [], []
+    for token in spec.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        m = re.fullmatch(r"p\s*([A-Za-z0-9]+)(?:\s*-\s*p?\s*([A-Za-z0-9]+))?", token, re.I)
+        if not m:
+            plain.append(token)
+            continue
+        numbers = numbers or PageNumbers(doc)
+        a = numbers.index_of(m.group(1))
+        b = numbers.index_of(m.group(2)) if m.group(2) else a
+        if a is None or b is None:
+            raise ValueError(f"printed page not found: {token}")
+        pages += [p for p in range(min(a, b), max(a, b) + 1) if p not in pages]
+    if plain:
+        pages += [p for p in (parse_page_range(",".join(plain), doc.page_count) or []) if p not in pages]
+    return sorted(pages) or None
 
 
 def page_groups(page_count: int, size: int) -> list:

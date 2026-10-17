@@ -67,8 +67,12 @@ def build_frontmatter(meta, pdf_path: Path, asset_dir_name: str, version: str, e
     container = getattr(meta, "container", "")
     if container:                                   # one chapter / page group of a bigger document
         lines.append(f"book: {yaml_str(container)}")
-        if getattr(meta, "part_pages", ""):
-            lines.append(f"pages_in_pdf: {yaml_str(meta.part_pages)}")
+        printed = getattr(meta, "part_pages_printed", "")
+        in_pdf = getattr(meta, "part_pages_pdf", "") or getattr(meta, "part_pages", "")
+        if printed:
+            lines.append(f"pages: {yaml_str(printed)}")
+        if in_pdf:
+            lines.append(f"pages_in_pdf: {yaml_str(in_pdf)}")
         if getattr(meta, "part_id", ""):
             lines.append(f"chapter_id: {yaml_str(meta.part_id)}")
     lines += ["tags:", f"  - {'chapter' if kind == 'chapter' else 'paper' if kind == 'paper' else 'document'}"]

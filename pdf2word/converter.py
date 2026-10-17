@@ -15,10 +15,11 @@ from .config import (CHAPTER_ASSET_TEMPLATE, CHAPTER_NAME_TEMPLATE, DOC_ASSET_TE
                      PAPER_ASSET_TEMPLATE, PAPER_NAME_TEMPLATE, Options)
 from .lighten import lighten_document
 from .inlinemath import inline_text_math
-from .mathocr import TEXT_FLAGS, EquationOCR, EquationResult, build_engine, find_labels, render, tight_crop
+from .mathocr import LABEL_RE, TEXT_FLAGS, EquationOCR, EquationResult, build_engine, find_labels, render, tight_crop
 from .metadata import PaperMeta, detect_doc_type, document_meta, resolve_metadata
 from .obsidian import block_id, build_frontmatter, ensure_title, image_link, postprocess
-from .outline import Part, page_groups, part_document, read_outline, select_parts
+from .outline import PageNumbers, Part, page_groups, parse_pages, part_document, read_outline, select_parts, split_children
+from .vectormath import doubtful_equation, find_math, inline_latex_ok
 from .symbols import has_pua, map_pua
 from .utils import log, parse_page_range, safe_name, slugify_title, strip_emphasis
 
@@ -122,7 +123,7 @@ class Converter:
         log.info("== %s", pdf_path.name)
         doc = self._open(pdf_path)
         try:
-            pages = parse_page_range(opt.pages, doc.page_count)
+            pages = parse_pages(opt.pages, doc) if opt.pages else None
             first_text = map_pua("\n".join(doc[i].get_text("text") for i in range(min(2, doc.page_count))))
             doc_type = self._doc_type(doc, first_text)
             if doc_type == "paper":
@@ -177,7 +178,10 @@ class Converter:
                 tree = read_outline(doc)
                 if not tree:
                     raise RuntimeError("the PDF has no bookmarks; use --split-pages N or --pages")
-                return select_parts(tree, opt.chapters)
+                parts = select_parts(tree, opt.chapters)
+                if opt.subchapters:
+                    parts = [p for sel in parts for p in split_children(doc, sel)]
+                return parts
             return page_groups(doc.page_count, opt.split_pages)
         finally:
             doc.close()
@@ -192,19 +196,23 @@ class Converter:
         results = []
         try:
             book = document_meta(doc, pdf_path)
-            log.info("== %s: %d part(s) of %d pages", pdf_path.name, len(parts), doc.page_count)
+            numbers = PageNumbers(doc)
+            log.info("== %s: %d part(s) of %d pages (page numbers: %s)", pdf_path.name, len(parts),
+                     doc.page_count, numbers.source)
             for part in parts:
                 if stop is not None and stop():
                     log.info("  stopped before part %s", part.num_str)
                     break
                 t0 = time.time()
-                log.info("== %s  [%s %s] %s  (pages %s)", pdf_path.name, part.kind, part.num_str,
-                         part.title, part.pages_label)
+                where = numbers.describe(part.page_from, part.page_to)
+                log.info("== %s  [%s %s] %s  (%s)", pdf_path.name, part.kind, part.num_str, part.title, where)
                 try:
-                    title = part.title if part.kind == "chapter" else f"{book.title} (pages {part.pages_label})"
+                    title = part.title if part.kind == "chapter" else f"{book.title} ({where})"
                     meta = PaperMeta(title=title, authors=list(book.authors), first_author=book.first_author,
                                      year=book.year, source="outline", kind=part.kind, container=book.title,
-                                     part_pages=part.pages_label, part_id=part.id)
+                                     part_pages=where, part_pages_pdf=part.pages_label,
+                                     part_pages_printed=numbers.printed_range(part.page_from, part.page_to),
+                                     part_id=part.id)
                     fields = self._fields(book, pdf_path)
                     fields.update(part.fields(fields["stem"], doc.page_count))
                     name_t = opt.chapter_template or CHAPTER_NAME_TEMPLATE
@@ -484,9 +492,30 @@ class _DocContext:
             s, e = box["pos"]
             box["_text"] = text[s:e]
         self._consumed_labels = []
-        out = []
+        # equations / symbols drawn as vector paths or loose images (manuals): found once per page
+        inline_atoms, orphan_eqs = [], []
+        if self.opt.vector_math or self.opt.inline_image_math:
+            try:
+                inline_atoms, orphan_eqs = find_math(page, boxes, self._page_images(page), self.opt.vector_math)
+            except Exception as exc:
+                log.debug("  page %d: graphics math scan failed: %s", self.pdf_page(page), exc)
+        pre: list = []
+        pending: dict = {}
+        for eq in orphan_eqs:
+            try:
+                md = self._orphan_equation(page, eq)
+            except Exception as exc:
+                log.warning("  page %d: drawn equation failed (%s)", self.pdf_page(page), exc)
+                continue
+            if md:
+                idx = self._box_above(boxes, eq)
+                (pre if idx is None else pending.setdefault(idx, [])).append(md)
+        if inline_atoms:
+            self.stats["inline_graphics"] += len(inline_atoms)
+
+        out = list(pre)
         cursor = 0
-        for box in boxes:
+        for i, box in enumerate(boxes):
             start, stop = box["pos"]
             cls = box.get("class", "text")
             seg = text[start:stop]
@@ -500,8 +529,9 @@ class _DocContext:
                 elif cls == "text" and looks_like_caption(seg):
                     seg = self._caption(seg)           # caption the layout model filed as text
                 elif cls in TEXT_CLASSES:
-                    if self.opt.inline_image_math:
-                        seg = self._inline_math(page, box, seg)
+                    extra = [a for a in inline_atoms if self._inside(a, box)]
+                    if self.opt.inline_image_math or extra:
+                        seg = self._inline_math(page, box, seg, extra)
                     if self.opt.inline_text_math and cls != "footnote":
                         seg = self._text_math(page, box, seg)
                 elif cls == "section-header":
@@ -515,17 +545,61 @@ class _DocContext:
                 if self.opt.verbose:
                     log.exception("box failure")
             out.append(seg)
+            out.extend(pending.get(i, []))
             cursor = max(cursor, stop)
         out.append(text[cursor:])
         page_md = "".join(out)
-        for label in self._consumed_labels:    # '(3)' lines that belonged to an equation image
+        for label in dict.fromkeys(self._consumed_labels):   # '(3)' lines that belonged to an equation image
             page_md = re.sub(rf"(?m)^[ \t]*\({re.escape(label)}\)[ \t]*\n?", "", page_md, count=1)
         return page_md
+
+    @staticmethod
+    def _inside(rect: pymupdf.Rect, box: dict, frac: float = 0.6) -> bool:
+        inter = rect & pymupdf.Rect(box["bbox"])
+        return (not inter.is_empty) and inter.get_area() >= frac * max(rect.get_area(), 1e-6)
+
+    @staticmethod
+    def _box_above(boxes: list, eq: pymupdf.Rect) -> Optional[int]:
+        """Index of the box after which a drawn equation belongs: the nearest box ending above
+        it in the same column (any column if none); None = top of the page."""
+        cands = []
+        for i, b in enumerate(boxes):
+            x0, y0, x1, y1 = b["bbox"]
+            if y1 <= eq.y0 + 3:
+                cands.append((min(x1, eq.x1) - max(x0, eq.x0) > 0, y1, i))
+        if not cands:
+            return None
+        same_col = [c for c in cands if c[0]]
+        pool = same_col or cands
+        return max(pool, key=lambda c: (c[1], c[2]))[2]
+
+    def _orphan_equation(self, page, eq: pymupdf.Rect) -> str:
+        """A display equation drawn as graphics (no text layer, no layout box): OCR of the
+        rendered region, numbered by a '(5.95)' label found to its right."""
+        strip = pymupdf.Rect(eq.x1, eq.y0 - 3, page.rect.x1, eq.y1 + 3)
+        labels = find_labels(page, strip) if strip.width > 10 else []
+        label = labels[0][0] if labels else None
+        region = (eq + (-2, -2, 2, 2)) & page.rect
+        self.stats["eq_total"] += 1
+        self.stats["eq_drawn"] += 1
+        result = self.conv.ocr.recognize_region(page, region, "")
+        if result.cached:
+            self.stats["eq_cached"] += 1
+        if label:
+            self._consumed_labels.append(label)
+        return "\n" + self._format_equation(result, label, "", page, region) + "\n"
 
     # ---- formulas ----------------------------------------------------------
     def _formula(self, page, box: dict, seg: str) -> str:
         rect = pymupdf.Rect(box["bbox"])
-        labels = find_labels(page, rect)
+        inside = (page.get_text("text", clip=rect) or "").strip()
+        m = LABEL_RE.match(inside)
+        if m and rect.width < 60:
+            # only an equation number: the equation itself is drawn as graphics (handled per page)
+            self._consumed_labels.append(m.group(1))
+            return ""
+        # the number may sit outside the box, at the right margin
+        labels = find_labels(page, pymupdf.Rect(rect.x0, rect.y0 - 3, page.rect.x1, rect.y1 + 3))
         regions = self._split_regions(rect, labels)
         blocks = []
         for region, label in regions:
@@ -553,6 +627,9 @@ class _DocContext:
     def _format_equation(self, result: EquationResult, label: Optional[str], hint: str, page, region) -> str:
         opt = self.opt
         lines = []
+        if not hint and doubtful_equation(result.latex):
+            # no text layer to verify against (drawn / pictured equation) and the LaTeX looks garbled
+            result.confidence = min(result.confidence, 0.5)
         if result.latex and opt.math_mode != "image":
             body = result.latex
             if label:
@@ -604,8 +681,10 @@ class _DocContext:
         # Equations set as images (Word/MathType): a '(n)' label to the right, or a short wide strip
         if not kind and self.opt.math_engine not in ("none", "off", "image") and not self._is_logo(page, box):
             label = self._label_right_of(page, box)
-            if label or (h <= 70 and w >= 100 and w / max(h, 1) >= 2.5):
-                eq = self._picture_as_equation(page, box, label)
+            if label:                      # numbered equation(s) set as a picture: one region per number
+                return self._formula(page, box, seg)
+            if h <= 70 and w >= 100 and w / max(h, 1) >= 2.5:
+                eq = self._picture_as_equation(page, box, None)
                 if eq is not None:
                     return eq
         if not kind and (w < 20 or h < 20 or w * h < 2500 or self._is_logo(page, box)):   # logos, badges, icons
@@ -731,10 +810,13 @@ class _DocContext:
         return f"\n{text}\n\n"
 
     # ---- inline equation images -------------------------------------------
-    def _inline_math(self, page, box: dict, seg: str) -> str:
+    def _inline_math(self, page, box: dict, seg: str, extra: Optional[list] = None) -> str:
+        """Small images (and, via `extra`, vector-drawn symbols) inside a text box -> $...$ at
+        the right spot of the text; a doubtful OCR result becomes a small inline image."""
         rect = pymupdf.Rect(box["bbox"])
-        infos = self._page_images(page)
-        if not infos:
+        infos = self._page_images(page) if self.opt.inline_image_math else []
+        extra = extra or []
+        if not infos and not extra:
             return seg
         sizes = []
         try:
@@ -756,6 +838,10 @@ class _DocContext:
             if inter.is_empty or inter.get_area() < 0.8 * ir.get_area():
                 continue
             cands.append(ir)
+        for a in extra:
+            a = pymupdf.Rect(a)
+            if not any((a & c).get_area() > 0.5 * a.get_area() for c in cands):
+                cands.append(a)
         if not cands:
             return seg
         words = page.get_text("words", clip=rect)
@@ -766,35 +852,75 @@ class _DocContext:
             img = tight_crop(render(page, ir, 3.0), pad=10)
             if img is None:
                 continue
-            latex = self.conv.ocr.recognize_image(img, "")
-            if not latex:
-                self.stats["inline_failed"] += 1
-                continue
-            token = f" ${latex}$ "
-            same_line = [w for w in words if min(w[3], ir.y1) - max(w[1], ir.y0) > 0.5 * ir.height]
-            before = [w for w in same_line if w[2] <= ir.x0 + 1.5]
-            after = [w for w in same_line if w[0] >= ir.x1 - 1.5]
-            anchor = max(before, key=lambda w: w[2]) if before else None
-            inserted = False
-            if anchor:
-                pat = self._fuzzy_word(anchor[4])
-                mm = pat.search(new, cursor) if pat else None
-                if mm:
-                    new = new[:mm.end()] + token + new[mm.end():]
-                    cursor = mm.end() + len(token)
-                    inserted = True
-            if not inserted and after:
-                nxt = min(after, key=lambda w: w[0])
-                pat = self._fuzzy_word(nxt[4])
-                mm = pat.search(new, cursor) if pat else None
-                if mm:
-                    new = new[:mm.start()] + token + new[mm.start():]
-                    cursor = mm.start() + len(token)
-                    inserted = True
+            latex = self.conv.ocr.recognize_image(img, "") if self.conv.engine_name != "none" else None
+            if latex and not inline_latex_ok(latex, ir):
+                log.debug("  page %d: inline OCR doubtful (%s) -> image", self.pdf_page(page), latex)
+                latex = None
+            if latex:
+                token = f" ${latex}$ "
+            else:
+                fname = self._save_inline_image(tight_crop(render(page, ir, 3.0), pad=2) or img)
+                if not fname:
+                    self.stats["inline_failed"] += 1
+                    continue
+                token = " " + self._embed(fname, "symbol") + " "
+                self.stats["inline_as_image"] += 1
+            new, cursor, inserted = self._place_token(new, cursor, token, words, ir)
             if not inserted:
-                new = new.rstrip("\n") + token.rstrip() + "\n\n"
-            self.stats["inline_eqs"] += 1
-        return new
+                self.stats["inline_unplaced"] += 1
+            if latex:
+                self.stats["inline_eqs"] += 1
+        return re.sub(r"(?<=\S)  +(?=\S)", " ", new)
+
+    def _place_token(self, text: str, cursor: int, token: str, words: list, ir: pymupdf.Rect):
+        """Insert `token` where the symbol sits in reading order: after the two words preceding it
+        (one word is ambiguous: 'of', 'the'), else after one word whose follower matches, else
+        before the following word, else at the end of the paragraph. -> (text, cursor, placed)"""
+        order = sorted(words, key=lambda w: (round(((w[1] + w[3]) / 2) / 5), w[0]))
+        cy = (ir.y0 + ir.y1) / 2
+        pos = 0
+        for i, w in enumerate(order):
+            wy = (w[1] + w[3]) / 2
+            if wy < ir.y0 - 0.3 * ir.height:                                   # lines above
+                pos = i + 1
+            elif abs(wy - cy) <= 0.7 * max(ir.height, w[3] - w[1]) and w[2] <= ir.x0 + 1.5:
+                pos = i + 1                                                      # same line, left of it
+        before = [w[4] for w in order[max(0, pos - 2):pos]]
+        after = order[pos][4] if pos < len(order) else None
+        tries = ([before[-2:]] if len(before) == 2 else []) + ([before[-1:]] if before else [])
+        for anchor in tries:
+            pats = [self._fuzzy_word(w) for w in anchor]
+            if not all(pats):
+                continue
+            pat = re.compile(r"\s+".join(p.pattern for p in pats))
+            for mm in pat.finditer(text, cursor):
+                end = mm.end()
+                trail = re.search(r"[^\w\s]+$", anchor[-1])          # 'flux,' stays together
+                if trail and text.startswith(trail.group(0), end):
+                    end += len(trail.group(0))
+                if len(anchor) == 1 and after:                         # one word: check what follows
+                    apat = self._fuzzy_word(after)
+                    if apat and not apat.match(text[end:].lstrip(" ,.;:()[]")):
+                        continue
+                tok = token.rstrip() if text[end:end + 1] in ",.;:)]" else token   # 'q_in, as'
+                return text[:end] + tok + text[end:], end + len(tok), True
+        if after:
+            apat = self._fuzzy_word(after)
+            mm = apat.search(text, cursor) if apat else None
+            if mm:
+                return text[:mm.start()] + token + text[mm.start():], mm.start() + len(token), True
+        return text.rstrip("\n") + token.rstrip() + "\n\n", len(text), False
+
+    def _save_inline_image(self, img) -> Optional[str]:
+        """A symbol crop (rendered at zoom 3 = 216 dpi) saved at its physical size."""
+        try:
+            self.inline_seq += 1
+            fname = f"inline-{self.inline_seq:02d}.png"
+            img.save(self.asset_dir / fname, dpi=(216, 216))
+            return fname
+        except Exception as exc:
+            log.debug("inline image not saved: %s", exc)
+            return None
 
     # ---- inline text math (rho_f, u_i set as ordinary text) ---------------
     def _text_math(self, page, box: dict, seg: str) -> str:

@@ -138,7 +138,11 @@ def launch_gui() -> int:
             self.items: dict = {}          # Part id -> tree item id
             self.loaded: set = set()       # tree item ids whose children are inserted
             self.parts: list = []
+            self.by_id: dict = {}          # Part id -> Part
+            self.parent_of: dict = {}      # Part id -> parent Part
+            self.printed: dict = {}        # Part id -> printed page range ("201-205") or ""
             self.page_count = 0
+            self.numbers_source = "none"
             self.error = ""
             self._load()
             self._build(current)
@@ -148,11 +152,18 @@ def launch_gui() -> int:
         def _load(self):
             try:
                 import pymupdf
-                from pdf2word.outline import read_outline
+                from pdf2word.outline import PageNumbers, flatten, read_outline
                 doc = pymupdf.open(self.path)
                 try:
                     self.page_count = doc.page_count
                     self.parts = read_outline(doc)
+                    numbers = PageNumbers(doc)
+                    self.numbers_source = numbers.source
+                    for part in flatten(self.parts):
+                        self.by_id[part.id] = part
+                        for child in part.children:
+                            self.parent_of[child.id] = part
+                        self.printed[part.id] = numbers.printed_range(part.page_from, part.page_to)
                 finally:
                     doc.close()
             except Exception as exc:
@@ -174,17 +185,20 @@ def launch_gui() -> int:
             card = ttk.Frame(self, style="Card.TFrame", padding=(10, 8))
             card.pack(fill="both", expand=True, padx=14, pady=(0, 8))
             if self.parts:
-                ttk.Label(card, text="항목을 클릭해 체크하면 그 항목(하위 포함)이 파일 하나로 저장됩니다. ▸ 를 누르면 하위 항목이 열립니다.",
+                ttk.Label(card, text="항목을 클릭해 체크하면 하위 항목까지 함께 선택되고, 그 묶음이 파일 하나가 됩니다. "
+                                     "▸ 를 누르면 하위 항목이 열립니다. ▣ = 일부만 선택됨",
                           style="Muted.TLabel").pack(anchor="w", pady=(0, 4))
                 box = ttk.Frame(card, style="Card.TFrame")
                 box.pack(fill="both", expand=True)
-                self.tree = ttk.Treeview(box, columns=("pages", "n"), show="tree headings", selectmode="none")
+                self.tree = ttk.Treeview(box, columns=("printed", "pdf", "n"), show="tree headings", selectmode="none")
                 self.tree.heading("#0", text="제목 (클릭 = 선택)")
-                self.tree.heading("pages", text="페이지")
+                self.tree.heading("printed", text="쪽 (인쇄)")
+                self.tree.heading("pdf", text="PDF 쪽")
                 self.tree.heading("n", text="쪽수")
-                self.tree.column("#0", width=520, stretch=True)
-                self.tree.column("pages", width=100, anchor="center", stretch=False)
-                self.tree.column("n", width=60, anchor="e", stretch=False)
+                self.tree.column("#0", width=470, stretch=True)
+                self.tree.column("printed", width=96, anchor="center", stretch=False)
+                self.tree.column("pdf", width=96, anchor="center", stretch=False)
+                self.tree.column("n", width=56, anchor="e", stretch=False)
                 vsb = ttk.Scrollbar(box, orient="vertical", command=self.tree.yview)
                 self.tree.configure(yscrollcommand=vsb.set)
                 self.tree.pack(side="left", fill="both", expand=True)
@@ -202,7 +216,11 @@ def launch_gui() -> int:
                 ttk.Button(quick, text="모두 해제", command=lambda: self._check_level(0)).pack(side="left", padx=(6, 0))
                 self.count_var = tk.StringVar()
                 ttk.Label(quick, textvariable=self.count_var, style="Muted.TLabel").pack(side="right")
+                self.split_var = tk.BooleanVar(value=bool(current.get("split", False)))
+                ttk.Checkbutton(card, text="체크한 항목을 바로 아래 하위 항목별 파일로 나누기 (챕터 서론은 챕터 제목의 파일로)",
+                                variable=self.split_var, command=self._refresh_count).pack(anchor="w", pady=(6, 0))
             else:
+                self.split_var = tk.BooleanVar(value=False)
                 ttk.Label(card, text="이 PDF에는 책갈피가 없습니다. 대신 일정 쪽수마다 나누어 변환할 수 있습니다.",
                           style="Card.TLabel").pack(anchor="w", pady=(4, 8))
 
@@ -219,13 +237,17 @@ def launch_gui() -> int:
 
             foot = ttk.Frame(self, padding=(14, 0, 14, 10))
             foot.pack(fill="x")
-            ttk.Label(foot, text="파일 이름: 문서명-번호-제목  (번호는 책갈피 순서, 선택과 무관하게 고정)", style="Sub.TLabel").pack(side="left")
+            ttk.Label(foot, text="파일 이름: 문서명-번호-제목 (번호는 책갈피 순서로 고정) · 쪽(인쇄)은 "
+                                 + ("PDF의 쪽 라벨" if self.numbers_source == "labels" else
+                                    "머리글·바닥글에서 추정" if self.numbers_source == "printed" else "정보 없음"),
+                      style="Sub.TLabel").pack(side="left")
             ttk.Button(foot, text="취소", command=self.destroy).pack(side="right")
             ttk.Button(foot, text="확인", style="Accent.TButton", command=self._ok).pack(side="right", padx=(0, 8))
             self._refresh_count()
 
         def _insert(self, parent: str, part):
-            iid = self.tree.insert(parent, "end", text=self._label(part), values=(part.pages_label, part.page_count),
+            iid = self.tree.insert(parent, "end", text=self._label(part),
+                                   values=(self.printed.get(part.id) or "-", part.pages_label, part.page_count),
                                    open=False, tags=("checked",) if part.id in self.checked else ())
             self.nodes[iid] = part
             self.items[part.id] = iid
@@ -235,8 +257,23 @@ def launch_gui() -> int:
                 self.loaded.add(iid)
             return iid
 
+        def _state(self, part) -> str:
+            """'full' (checked, with all descendants), 'partial' (some descendants), 'none'."""
+            if part.id in self.checked:
+                return "full"
+            if any(d.id in self.checked for d in part.walk() if d is not part):
+                return "partial"
+            return "none"
+
         def _label(self, part) -> str:
-            return ("☑  " if part.id in self.checked else "☐  ") + part.title
+            glyph = {"full": "☑  ", "partial": "▣  ", "none": "☐  "}[self._state(part)]
+            return glyph + part.title
+
+        def _roots(self) -> list:
+            """Checked entries whose parent is not checked: each becomes one file (document order)."""
+            from pdf2word.outline import flatten
+            return [p for p in flatten(self.parts) if p.id in self.checked
+                    and not (self.parent_of.get(p.id) and self.parent_of[p.id].id in self.checked)]
 
         def _on_open(self, _event=None):
             iid = self.tree.focus()
@@ -257,37 +294,55 @@ def launch_gui() -> int:
             return "break"
 
         def _toggle(self, iid: str):
+            """Check = this entry and everything below it; uncheck = the same, and the ancestors
+            lose their full check (their other branches stay selected)."""
             part = self.nodes.get(iid)
             if part is None:
                 return
+            subtree = {d.id for d in part.walk()}
             if part.id in self.checked:
-                self.checked.discard(part.id)
+                self.checked -= subtree
+                parent = self.parent_of.get(part.id)
+                while parent is not None:
+                    self.checked.discard(parent.id)
+                    parent = self.parent_of.get(parent.id)
             else:
-                self.checked.add(part.id)
-            self._paint(iid)
+                self.checked |= subtree
+            self._paint_all()
             self._refresh_count()
 
         def _paint(self, iid: str):
             part = self.nodes[iid]
             self.tree.item(iid, text=self._label(part), tags=("checked",) if part.id in self.checked else ())
 
-        def _check_level(self, level: int):
-            from pdf2word.outline import flatten
-            self.checked = {p.id for p in flatten(self.parts) if p.level == level} if level else set()
+        def _paint_all(self):
             for iid in self.nodes:
                 self._paint(iid)
+
+        def _check_level(self, level: int):
+            from pdf2word.outline import flatten
+            self.checked = set()
+            if level:
+                for p in flatten(self.parts):
+                    if p.level == level:
+                        self.checked |= {d.id for d in p.walk()}
+            self._paint_all()
             self._refresh_count()
 
         def _refresh_count(self):
             if not self.parts:
                 return
-            from pdf2word.outline import flatten
-            chosen = [p for p in flatten(self.parts) if p.id in self.checked]
-            pages = sum(p.page_count for p in chosen)
+            roots = self._roots()
+            pages = sum(p.page_count for p in roots)
             if self.pages_mode.get():
                 self.count_var.set("쪽수 분할 모드 (체크는 무시됩니다)")
+            elif not roots:
+                self.count_var.set("선택 없음 = 문서 전체를 하나로 변환")
+            elif self.split_var.get():
+                n_files = sum(max(1, len(p.children) + (1 if p.children else 0)) for p in roots)
+                self.count_var.set(f"선택 {len(roots)}개 · {pages}쪽 · 하위별 최대 {n_files}개 파일")
             else:
-                self.count_var.set(f"선택 {len(chosen)}개 · {pages}쪽" if chosen else "선택 없음 = 문서 전체를 하나로 변환")
+                self.count_var.set(f"선택 {len(roots)}개 · {pages}쪽 · 파일 {len(roots)}개")
 
         def _ok(self):
             if self.pages_mode.get():
@@ -297,10 +352,9 @@ def launch_gui() -> int:
                     size = 50
                 self.result = {"kind": "pages", "size": size}
             else:
-                from pdf2word.outline import flatten
-                chosen = [p for p in flatten(self.parts) if p.id in self.checked]
-                self.result = {"kind": "chapters", "ids": [p.id for p in chosen],
-                               "titles": [p.title for p in chosen]} if chosen else {}
+                roots = self._roots()
+                self.result = {"kind": "chapters", "ids": [p.id for p in roots], "titles": [p.title for p in roots],
+                               "split": bool(self.split_var.get())} if roots else {}
             self.destroy()
 
     class App(tk.Tk):
@@ -420,7 +474,7 @@ def launch_gui() -> int:
             ttk.Label(card, text="페이지", style="Card.TLabel").grid(row=2, column=2, sticky="e", padx=(18, 4), pady=(4, 0))
             self.pages_var = tk.StringVar(value="")
             ttk.Entry(card, textvariable=self.pages_var, width=10).grid(row=2, column=3, sticky="w", pady=(4, 0))
-            ttk.Label(card, text="예: 1-5,8", style="Muted.TLabel").grid(row=2, column=4, sticky="w", padx=(6, 0), pady=(4, 0))
+            ttk.Label(card, text="예: 1-5,8 (PDF 순서) · p201-205 (인쇄 쪽 번호)", style="Muted.TLabel").grid(row=2, column=4, sticky="w", padx=(6, 0), pady=(4, 0))
             ttk.Label(card, text="추가 옵션", style="Card.TLabel").grid(row=3, column=0, sticky="w", pady=(6, 0))
             self.extra_var = tk.StringVar(value="")
             ttk.Entry(card, textvariable=self.extra_var).grid(row=3, column=1, columnspan=4, sticky="ew", pady=(6, 0))
@@ -490,7 +544,8 @@ def launch_gui() -> int:
             if sel.get("kind") == "pages":
                 return f"{sel.get('size', 50)}쪽마다 나누어 변환"
             n = len(sel.get("ids", []))
-            return f"챕터 {n}개 선택 ({', '.join(sel['ids'][:4])}{' …' if n > 4 else ''})"
+            return (f"챕터 {n}개 선택 ({', '.join(sel['ids'][:4])}{' …' if n > 4 else ''})"
+                    + (" · 하위 항목별 파일" if sel.get("split") else ""))
 
         def _refresh_list(self):
             self.listbox.delete(0, "end")
@@ -615,12 +670,15 @@ def launch_gui() -> int:
         @staticmethod
         def _parts_for(pdf: str, sel: dict) -> list:
             import pymupdf
-            from pdf2word.outline import page_groups, read_outline, select_parts
+            from pdf2word.outline import page_groups, read_outline, select_parts, split_children
             doc = pymupdf.open(pdf)
             try:
                 if sel.get("kind") == "pages":
                     return page_groups(doc.page_count, int(sel.get("size", 50)))
-                return select_parts(read_outline(doc), ",".join(sel.get("ids", [])))
+                parts = select_parts(read_outline(doc), ",".join(sel.get("ids", [])))
+                if sel.get("split"):
+                    parts = [p for root in parts for p in split_children(doc, root)]
+                return parts
             finally:
                 doc.close()
 

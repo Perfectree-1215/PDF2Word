@@ -47,7 +47,9 @@ class PaperMeta:
     source: str = ""                # crossref | arxiv | heuristic | document | outline (+override)
     kind: str = "paper"             # paper | document | chapter | pages
     container: str = ""             # title of the whole document when this is one chapter / page group
-    part_pages: str = ""            # "145-176": pages of the part in the PDF (1-based)
+    part_pages: str = ""            # human form: "p. 201-205 (PDF 249-253)" / "PDF 249-253"
+    part_pages_pdf: str = ""        # "249-253": pages of the part in the PDF (1-based)
+    part_pages_printed: str = ""    # "201-205": printed page numbers (page labels), "" if unknown
     part_id: str = ""               # bookmark id of the chapter ("3.2")
 
     def as_dict(self) -> dict:

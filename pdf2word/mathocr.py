@@ -147,6 +147,9 @@ def clean_latex(s: str) -> str:
     # pix2tex spells words letter by letter: 'r a d' -> 'rad' (runs of >= 3 single letters)
     s = re.sub(r"(?<![A-Za-z\\])([A-Za-z](?: [A-Za-z]){2,})(?![A-Za-z])",
                lambda m: m.group(1).replace(" ", ""), s)
+    # ... and sub/superscripts: q_{i n} -> q_{in}, T_{\ w} -> T_{w}
+    s = re.sub(r"([_^])\{\\?\s*([A-Za-z](?:\s[A-Za-z])+)\s*\}", lambda m: m.group(1) + "{" + m.group(2).replace(" ", "") + "}", s)
+    s = re.sub(r"([_^])\{\\ ([^{}]*)\}", r"\1{\2}", s)
     s = re.sub(rf"(?:\s*{_SPACE_CMD}){{3,}}", r" \\quad ", s)
     s = re.sub(rf"^(?:{_SPACE_CMD}\s*)+", "", s)
     s = re.sub(rf"(?:\s*{_SPACE_CMD})+\s*$", "", s)

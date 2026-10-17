@@ -37,6 +37,7 @@ class Options:
     chapter_template: str = CHAPTER_NAME_TEMPLATE   # file name of one chapter / page group
     split_pages: int = 0                        # > 0: one file per N pages (for PDFs without bookmarks)
     chapter_depth: int = 2                      # depth shown by --list-chapters
+    subchapters: bool = False                   # split each selected entry into its direct sub-entries
 
     # --- metadata ----------------------------------------------------------
     online: bool = True                         # CrossRef / arXiv lookup
@@ -59,6 +60,7 @@ class Options:
     math_mode: str = "both"                     # "both" (image + LaTeX below) | "latex" | "image"
     inline_image_math: bool = True              # OCR small images embedded in text lines
     inline_text_math: bool = True               # text-layer inline math (ρ_f, u_i) -> $...$
+    vector_math: bool = True                    # equations/symbols drawn as vector paths (manuals) -> OCR
     claude_model: str = "claude-opus-5-5"
     claude_effort: str = "low"
     cache: bool = True
