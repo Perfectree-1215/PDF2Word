@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pdf2word"
+dynamic = ["version"]
+description = "Turn academic PDF papers into Word documents or Obsidian notes: layout-aware text, equations as image + OCR (Word math / LaTeX), figures, bibliographic front matter."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+keywords = ["pdf", "word", "docx", "obsidian", "markdown", "latex", "ocr", "paper"]
+dependencies = [
+    "pymupdf>=1.26.4",
+    "pymupdf4llm>=1.26",
+    "pymupdf-layout>=1.26",
+    "rapid_latex_ocr>=0.0.9",
+    "requests>=2.28",
+    "numpy>=1.24",
+    "Pillow>=10",
+    "python-docx>=1.1",
+    "latex2mathml>=3.77",
+]
+
+[project.optional-dependencies]
+claude = ["anthropic>=0.60"]
+dev = ["pytest>=7"]
+
+[project.scripts]
+pdf2word = "pdf2word.cli:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "pdf2word.__version__" }
+
+[tool.setuptools.packages.find]
+include = ["pdf2word*"]

@@ -1,0 +1,40 @@
+# ---------------------------------------------------------------------------
+# pdf2word: only the files needed to install and run the tool are published.
+# Everything below stays on the development PC.
+# ---------------------------------------------------------------------------
+
+# Python / packaging
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+
+# virtual environments (recreate with `uv venv` + `uv pip install -e .`)
+.venv/
+venv/
+
+# editor / tool state
+.obsidian/
+.claude/
+.vscode/
+.idea/
+
+# local backups and scratch
+backup/
+*.log
+*.tmp
+.pdf2word-tmp/
+
+# papers and conversion results must never be committed (copyrighted content)
+*.pdf
+*.docx
+~$*.docx
+_asset-*/
+/*.md
+!README.md
+!CHANGELOG.md
+
+# tests ship with the repository; uncomment to keep them local only
+# tests/
