@@ -11,12 +11,14 @@ from typing import Optional
 
 import pymupdf
 
-from .config import Options
+from .config import (CHAPTER_ASSET_TEMPLATE, CHAPTER_NAME_TEMPLATE, DOC_ASSET_TEMPLATE, DOC_NAME_TEMPLATE,
+                     PAPER_ASSET_TEMPLATE, PAPER_NAME_TEMPLATE, Options)
 from .lighten import lighten_document
 from .inlinemath import inline_text_math
 from .mathocr import TEXT_FLAGS, EquationOCR, EquationResult, build_engine, find_labels, render, tight_crop
-from .metadata import PaperMeta, resolve_metadata
+from .metadata import PaperMeta, detect_doc_type, document_meta, resolve_metadata
 from .obsidian import block_id, build_frontmatter, ensure_title, image_link, postprocess
+from .outline import Part, page_groups, part_document, read_outline, select_parts
 from .symbols import has_pua, map_pua
 from .utils import log, parse_page_range, safe_name, slugify_title, strip_emphasis
 
@@ -55,6 +57,13 @@ class ConversionResult:
     stats: dict = field(default_factory=dict)
     skipped: bool = False
     docx_path: Optional[Path] = None
+    part: Optional[Part] = None            # the chapter / page group this file holds (None = whole PDF)
+    doc_type: str = "paper"                # "paper" | "document"
+    error: str = ""                        # set when a part failed (convert_parts keeps going)
+
+    @property
+    def output(self) -> Optional[Path]:
+        return self.docx_path or self.md_path
 
 
 # ----------------------------------------------------------------------------- pymupdf4llm patch
@@ -106,41 +115,143 @@ class Converter:
 
     # -- public -------------------------------------------------------------
     def convert(self, pdf_path) -> ConversionResult:
+        """The whole document (or the --pages range) -> one Word / Markdown file."""
         opt = self.opt
         t0 = time.time()
         pdf_path = Path(pdf_path).resolve()
         log.info("== %s", pdf_path.name)
-        doc = pymupdf.open(pdf_path)
-        if doc.needs_pass:
-            raise RuntimeError("PDF is password protected")
-        if doc.page_count == 0:
-            raise RuntimeError("PDF has no pages")
-        pages = parse_page_range(opt.pages, doc.page_count)
+        doc = self._open(pdf_path)
+        try:
+            pages = parse_page_range(opt.pages, doc.page_count)
+            first_text = map_pua("\n".join(doc[i].get_text("text") for i in range(min(2, doc.page_count))))
+            doc_type = self._doc_type(doc, first_text)
+            if doc_type == "paper":
+                meta = resolve_metadata(doc, first_text, online=opt.online,
+                                        author=opt.author, year=opt.year, title=opt.title)
+            else:
+                meta = document_meta(doc, pdf_path)
+                self._apply_overrides(meta)
+            fields = self._fields(meta, pdf_path)
+            name_t = opt.name_template or (PAPER_NAME_TEMPLATE if doc_type == "paper" else DOC_NAME_TEMPLATE)
+            asset_t = opt.asset_template or (PAPER_ASSET_TEMPLATE if doc_type == "paper" else DOC_ASSET_TEMPLATE)
+            log.info("  title : %s", meta.title or "(unknown)")
+            if doc_type == "paper":
+                log.info("  author: %s (%d authors)  year: %s", meta.first_author or "?", len(meta.authors),
+                         meta.year or "nd")
+            base_name = safe_name(name_t.format(**fields), 150)
+            asset_name = safe_name(asset_t.format(**fields), 120)
+            if pages is None:
+                return self._run(doc, pdf_path, meta, doc_type, base_name, asset_name, t0=t0)
+            # a page range: work on a sub-document so that nothing scans the other pages
+            sub = self._subdoc(doc, pages)
+            try:
+                return self._run(sub, pdf_path, meta, doc_type, base_name, asset_name,
+                                 page_map=list(pages), total_pages=doc.page_count, t0=t0)
+            finally:
+                sub.close()
+        finally:
+            doc.close()
 
-        # 1) metadata -> names
-        first_text = "\n".join(doc[i].get_text("text") for i in range(min(2, doc.page_count)))
-        meta = resolve_metadata(doc, map_pua(first_text), online=opt.online,
-                                author=opt.author, year=opt.year, title=opt.title)
-        author = safe_name(meta.first_author or "Unknown", 40)
-        year = str(meta.year or "nd")
-        title_slug = slugify_title(meta.title) if meta.title else safe_name(pdf_path.stem, 60)
-        fields = dict(author=author, year=year, title=title_slug, stem=safe_name(pdf_path.stem, 80))
-        out_dir = Path(opt.out_dir).resolve() if opt.out_dir else pdf_path.parent
-        asset_name = safe_name(opt.asset_template.format(**fields), 120)
-        base_name = safe_name(opt.name_template.format(**fields), 150)
+    @staticmethod
+    def _subdoc(doc, pages: list) -> pymupdf.Document:
+        """A new document with just these pages (0-based, in the given order)."""
+        sub = pymupdf.open()
+        runs: list = []
+        for p in pages:
+            if runs and p == runs[-1][1] + 1:
+                runs[-1][1] = p
+            else:
+                runs.append([p, p])
+        for a, b in runs:
+            sub.insert_pdf(doc, from_page=a, to_page=b)
+        return sub
+
+    def plan_parts(self, pdf_path) -> list:
+        """Parts requested by the options (--chapters / --split-pages); [] = convert as a whole."""
+        opt = self.opt
+        if not opt.chapters and not opt.split_pages:
+            return []
+        doc = self._open(pdf_path)
+        try:
+            if opt.chapters:
+                tree = read_outline(doc)
+                if not tree:
+                    raise RuntimeError("the PDF has no bookmarks; use --split-pages N or --pages")
+                return select_parts(tree, opt.chapters)
+            return page_groups(doc.page_count, opt.split_pages)
+        finally:
+            doc.close()
+
+    def convert_parts(self, pdf_path, parts: list, stop=None) -> list:
+        """Every part (bookmark chapter or page group) -> its own file. A failing part is logged
+        and returned with .error set; the remaining parts still run. `stop()` returning True
+        between parts ends the loop early."""
+        opt = self.opt
+        pdf_path = Path(pdf_path).resolve()
+        doc = self._open(pdf_path)
+        results = []
+        try:
+            book = document_meta(doc, pdf_path)
+            log.info("== %s: %d part(s) of %d pages", pdf_path.name, len(parts), doc.page_count)
+            for part in parts:
+                if stop is not None and stop():
+                    log.info("  stopped before part %s", part.num_str)
+                    break
+                t0 = time.time()
+                log.info("== %s  [%s %s] %s  (pages %s)", pdf_path.name, part.kind, part.num_str,
+                         part.title, part.pages_label)
+                try:
+                    title = part.title if part.kind == "chapter" else f"{book.title} (pages {part.pages_label})"
+                    meta = PaperMeta(title=title, authors=list(book.authors), first_author=book.first_author,
+                                     year=book.year, source="outline", kind=part.kind, container=book.title,
+                                     part_pages=part.pages_label, part_id=part.id)
+                    fields = self._fields(book, pdf_path)
+                    fields.update(part.fields(fields["stem"], doc.page_count))
+                    name_t = opt.chapter_template or CHAPTER_NAME_TEMPLATE
+                    asset_t = opt.asset_template or CHAPTER_ASSET_TEMPLATE
+                    sub = part_document(doc, part, opt.chapter_split)
+                    try:
+                        results.append(self._run(sub, pdf_path, meta, "document",
+                                                 safe_name(name_t.format(**fields), 150),
+                                                 safe_name(asset_t.format(**fields), 120), part=part,
+                                                 page_map=list(range(part.page_from, part.page_to + 1)),
+                                                 total_pages=doc.page_count, t0=t0))
+                    finally:
+                        sub.close()
+                except Exception as exc:
+                    log.error("  FAILED part %s (%s): %s", part.num_str, part.title, exc)
+                    if opt.verbose:
+                        log.exception("part failure")
+                    results.append(ConversionResult(pdf_path, None, None, PaperMeta(title=part.title),
+                                                    part=part, doc_type="document", error=str(exc)))
+        finally:
+            doc.close()
+        return results
+
+    # -- pipeline -----------------------------------------------------------
+    def _run(self, doc, pdf_path: Path, meta: PaperMeta, doc_type: str, base_name: str, asset_name: str,
+             part: Optional[Part] = None, page_map: Optional[list] = None, total_pages: int = 0,
+             t0: Optional[float] = None) -> ConversionResult:
+        """Layout analysis -> Markdown assembly -> post-processing -> files, for `doc`: the whole
+        document, or a sub-document (page range / one part) whose page i is page page_map[i] of
+        the PDF. The caller closes `doc`."""
+        opt = self.opt
+        t0 = t0 or time.time()
+        total_pages = total_pages or doc.page_count
+        pages = None
         fmt = (opt.format or "docx").lower()
         if fmt not in ("docx", "md", "both"):
             raise ValueError(f"unknown output format: {opt.format}")
+        out_dir = Path(opt.out_dir).resolve() if opt.out_dir else pdf_path.parent
         md_path = out_dir / (base_name + ".md")
         docx_path = out_dir / (base_name + ".docx")
         asset_dir = out_dir / asset_name
-        log.info("  title : %s", meta.title or "(unknown)")
-        log.info("  author: %s (%d authors)  year: %s", meta.first_author or "?", len(meta.authors), year)
         targets = [p for p, wanted in ((md_path, fmt != "docx"), (docx_path, fmt != "md")) if wanted]
         if not opt.overwrite and any(p.exists() for p in targets):
             log.info("  exists, skipped (use --overwrite): %s", ", ".join(p.name for p in targets if p.exists()))
             return ConversionResult(pdf_path, md_path if fmt != "docx" else None, asset_dir, meta,
-                                    docx_path=docx_path if fmt != "md" else None, skipped=True)
+                                    docx_path=docx_path if fmt != "md" else None, skipped=True,
+                                    part=part, doc_type=doc_type)
 
         out_dir.mkdir(parents=True, exist_ok=True)
         asset_dir.mkdir(parents=True, exist_ok=True)
@@ -149,40 +260,40 @@ class Converter:
         stats: Counter = Counter()
         layout_doc = doc
         try:
-            # 2) layout analysis + markdown per page (pymupdf4llm + PyMuPDF Layout)
+            # 1) layout analysis + markdown per page (pymupdf4llm + PyMuPDF Layout)
             _patch_pymupdf4llm_pua()
             import pymupdf4llm
             if opt.lighten:
                 layout_doc, n_light = lighten_document(doc, dpi=opt.dpi)
                 stats["pages_lightened"] = n_light
-            log.info("  layout analysis ...")
+            n_pages = len(pages) if pages else doc.page_count
+            log.info("  layout analysis (%d pages) ...", n_pages)
             t_layout = time.time()
             # write_images=False: pictures are rendered from the ORIGINAL document in _picture()
             chunks = pymupdf4llm.to_markdown(
                 layout_doc, pages=pages, page_chunks=True, write_images=False,
                 header=opt.keep_headers, footer=opt.keep_headers,
-                use_ocr=opt.ocr_pages, force_text=True, show_progress=False,
+                use_ocr=opt.ocr_pages, force_text=True, show_progress=n_pages > 30,
             )
             log.info("  layout analysis done (%.0fs)", time.time() - t_layout)
             if isinstance(chunks, str):           # layout module unavailable -> plain string
                 chunks = [{"text": chunks, "page_boxes": [], "metadata": {"page_number": 1}}]
 
-            # 3) per-page assembly
-            ctx = _DocContext(doc, asset_dir, stats, self)
-            parts = []
-            total = len(chunks)
+            # 2) per-page assembly
+            ctx = _DocContext(doc, asset_dir, stats, self, page_map=page_map)
+            md_parts = []
             for i, chunk in enumerate(chunks, 1):
                 pno = int(chunk["metadata"].get("page_number", i)) - 1
                 page = doc[pno]
                 n_formula = sum(1 for b in chunk.get("page_boxes") or [] if b.get("class") == "formula")
                 if n_formula:
-                    log.info("  page %d/%d: %d equation block(s)", pno + 1, doc.page_count, n_formula)
-                parts.append(ctx.render_page(page, chunk))
+                    log.info("  page %d/%d: %d equation block(s)", ctx.pdf_page(page), total_pages, n_formula)
+                md_parts.append(ctx.render_page(page, chunk))
                 stats["pages"] += 1
-            body = ctx.finalize_subfigures("\n".join(parts))
+            body = ctx.finalize_subfigures("\n".join(md_parts))
 
-            # 4) obsidian post-processing + frontmatter
-            body = ensure_title(postprocess(body, opt), meta.title)
+            # 3) post-processing + frontmatter
+            body = ensure_title(postprocess(body, opt, paper=doc_type == "paper"), meta.title)
             front = build_frontmatter(meta, pdf_path, asset_dir.name, _version(), self.engine_name, stats)
             written = []
             if fmt in ("md", "both"):
@@ -198,7 +309,6 @@ class Converter:
                 self._ocr.cache.save()
             if layout_doc is not doc:
                 layout_doc.close()
-            doc.close()
 
         if fmt == "docx":                         # images live inside the .docx now
             self._remove_generated(asset_dir)
@@ -214,9 +324,48 @@ class Converter:
                  f"; Word equations {stats['docx_eq_native']} native / {stats['docx_eq_text']} text"
                  if fmt != "md" else "")
         return ConversionResult(pdf_path, md_path if fmt != "docx" else None, asset_dir_out, meta,
-                                docx_path=docx_path if fmt != "md" else None, stats=dict(stats))
+                                docx_path=docx_path if fmt != "md" else None, stats=dict(stats),
+                                part=part, doc_type=doc_type)
 
     # -- helpers ------------------------------------------------------------
+    @staticmethod
+    def _open(pdf_path) -> pymupdf.Document:
+        doc = pymupdf.open(pdf_path)
+        if doc.needs_pass:
+            doc.close()
+            raise RuntimeError("PDF is password protected")
+        if doc.page_count == 0:
+            doc.close()
+            raise RuntimeError("PDF has no pages")
+        return doc
+
+    def _doc_type(self, doc, first_text: str) -> str:
+        wanted = (self.opt.doc_type or "auto").lower()
+        if wanted in ("paper", "document"):
+            kind, why = wanted, "option"
+        else:
+            kind, why = detect_doc_type(doc, first_text)
+        log.info("  document type: %s (%s)", kind, why)
+        return kind
+
+    def _apply_overrides(self, meta: PaperMeta) -> None:
+        opt = self.opt
+        if opt.title:
+            meta.title = opt.title
+        if opt.year:
+            meta.year = int(opt.year)
+        if opt.author:
+            meta.first_author = opt.author
+            meta.authors = meta.authors or [opt.author]
+
+    @staticmethod
+    def _fields(meta: PaperMeta, pdf_path: Path) -> dict:
+        """Template fields shared by file and asset-folder names."""
+        author = safe_name(meta.first_author or "Unknown", 40)
+        year = str(meta.year or "nd")
+        title_slug = slugify_title(meta.title) if meta.title else safe_name(pdf_path.stem, 60)
+        return dict(author=author, year=year, title=title_slug, stem=safe_name(pdf_path.stem, 80))
+
     @staticmethod
     def _remove_generated(asset_dir: Path) -> None:
         for f in asset_dir.iterdir():
@@ -240,12 +389,13 @@ def convert(pdf_path, options: Optional[Options] = None, **kwargs) -> Conversion
 # ----------------------------------------------------------------------------- per-document context
 
 class _DocContext:
-    def __init__(self, doc, asset_dir: Path, stats: Counter, conv: Converter):
+    def __init__(self, doc, asset_dir: Path, stats: Counter, conv: Converter, page_map: Optional[list] = None):
         self.doc = doc
         self.asset_dir = asset_dir
         self.stats = stats
         self.conv = conv
         self.opt = conv.opt
+        self.page_map = page_map               # sub-document page -> page of the full PDF (0-based)
         self.used_names: Counter = Counter()
         self.picture_names: dict = {}          # base -> [filename, ...] (for sub-figure lettering)
         self.eq_seq = 0
@@ -254,6 +404,13 @@ class _DocContext:
         self._page_images_cache: dict = {}
 
     # ---- document-level helpers ------------------------------------------
+    def pdf_page(self, page) -> int:
+        """1-based page number in the full PDF (for log messages)."""
+        pno = page.number
+        if self.page_map and pno < len(self.page_map):
+            pno = self.page_map[pno]
+        return pno + 1
+
     @staticmethod
     def _repeated_images(doc) -> set:
         """XObjects shown on many pages (journal logos in headers/footers)."""
@@ -354,7 +511,7 @@ class _DocContext:
                 elif cls == "caption":
                     seg = self._caption(seg)
             except Exception as exc:   # never lose a page because of one box
-                log.warning("  page %d: %s box failed (%s); kept raw text", page.number + 1, cls, exc)
+                log.warning("  page %d: %s box failed (%s); kept raw text", self.pdf_page(page), cls, exc)
                 if self.opt.verbose:
                     log.exception("box failure")
             out.append(seg)

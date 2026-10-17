@@ -6,15 +6,17 @@ import sys
 import time
 from pathlib import Path
 
-from .config import Options
+from .config import CHAPTER_NAME_TEMPLATE, Options
 from .utils import log, setup_console, setup_logging
 
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="pdf2word",
-        description="Convert academic PDFs to Obsidian Markdown: LaTeX equations (OCR), "
-                    "figures in an _asset-<Author>-<Year> folder, YAML frontmatter.",
+        description="Convert PDF papers, books and manuals to Word documents or Obsidian Markdown: "
+                    "layout-aware text, equations as image + OCR (Word math / LaTeX), figures, front matter. "
+                    "Big PDFs can be split by bookmark chapters (--list-chapters, --chapters) "
+                    "or every N pages (--split-pages).",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p.add_argument("inputs", nargs="+", help="PDF files, folders or glob patterns")
@@ -24,11 +26,32 @@ def build_parser() -> argparse.ArgumentParser:
                    help="native = Word equations (needs Microsoft Office's MML2OMML.XSL); text = LaTeX text")
     p.add_argument("-o", "--out-dir", type=Path, default=None,
                    help="output folder (default: next to each PDF)")
-    p.add_argument("--asset-template", default="_asset-{author}-{year}",
-                   help="asset folder name; fields: {author} {year} {title} {stem}")
-    p.add_argument("--name-template", default="{author}-{year}-{title}",
-                   help="markdown file name (without .md); same fields")
-    p.add_argument("--no-overwrite", action="store_true", help="skip PDFs whose .md already exists")
+    p.add_argument("--asset-template", default=None,
+                   help="asset folder name; fields: {author} {year} {title} {stem}, plus {num} {id} {p0} {p1} "
+                        "for chapters. Default: _asset-{author}-{year} for papers, _asset-{stem} for documents, "
+                        "_asset-{stem}-{num} for chapters")
+    p.add_argument("--name-template", default=None,
+                   help="output file name without extension; same fields. "
+                        "Default: {author}-{year}-{title} for papers, {stem} for documents")
+    p.add_argument("--no-overwrite", action="store_true", help="skip PDFs whose output already exists")
+
+    g = p.add_argument_group("document type / chapters")
+    g.add_argument("--doc-type", choices=["auto", "paper", "document"], default="auto",
+                   help="paper = journal/conference article (DOI lookup, abstract callout, reference list); "
+                        "document = book, manual, report; auto = paper when a DOI, arXiv id or abstract "
+                        "is found on the first pages")
+    g.add_argument("--list-chapters", action="store_true",
+                   help="print the bookmark tree (ids, page ranges) and convert nothing")
+    g.add_argument("--chapter-depth", type=int, default=2, help="depth of the tree shown by --list-chapters")
+    g.add_argument("--chapters",
+                   help="convert these bookmark entries, one file each; ids from --list-chapters, "
+                        "e.g. '3,4.2,5.1-5.4'; 'all' = every top-level entry, 'all:2' = every entry of depth 2")
+    g.add_argument("--chapter-split", choices=["exact", "page"], default="exact",
+                   help="exact = cut a shared first/last page at the bookmark position; page = keep whole pages")
+    g.add_argument("--chapter-template", default=CHAPTER_NAME_TEMPLATE,
+                   help="file name of one chapter / page group; fields: {stem} {num} {title} {id} {p0} {p1}")
+    g.add_argument("--split-pages", type=int, default=0, metavar="N",
+                   help="one file per N pages (for PDFs without bookmarks); names {stem}-{num}-p0001-0050")
 
     g = p.add_argument_group("metadata")
     g.add_argument("--author", help="override first-author surname")
@@ -57,7 +80,7 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--image-links", choices=["wiki", "markdown"], default="wiki",
                    help="![[file]] (Obsidian) or ![](file) (standard)")
     g.add_argument("--citations", choices=["keep", "footnotes"], default="keep",
-                   help="footnotes: [12] -> [^12] with the reference list as footnotes")
+                   help="footnotes: [12] -> [^12] with the reference list as footnotes (papers)")
     g.add_argument("--no-block-ids", action="store_true", help="no ^eq-3 / ^fig-2 anchors")
     g.add_argument("--no-abstract-callout", action="store_true")
     g.add_argument("--keep-headers", action="store_true", help="keep running page headers/footers")
@@ -96,6 +119,9 @@ def options_from_args(args) -> Options:
         out_dir=args.out_dir, asset_template=args.asset_template, name_template=args.name_template,
         overwrite=not args.no_overwrite, image_links=args.image_links, block_ids=not args.no_block_ids,
         citations=args.citations, abstract_callout=not args.no_abstract_callout,
+        doc_type=args.doc_type, chapters=args.chapters, chapter_split=args.chapter_split,
+        chapter_template=args.chapter_template, split_pages=max(0, args.split_pages or 0),
+        chapter_depth=args.chapter_depth,
         online=not args.offline, author=args.author, year=args.year, title=args.title,
         pages=args.pages, dpi=args.dpi, keep_headers=args.keep_headers,
         keep_picture_text=args.keep_picture_text, ocr_pages=args.ocr_pages, lighten=not args.no_lighten,
@@ -107,6 +133,29 @@ def options_from_args(args) -> Options:
     )
 
 
+def list_chapters(pdfs: list, depth: int) -> int:
+    """Print the bookmark tree of each PDF (ids usable with --chapters)."""
+    import pymupdf
+    from .outline import format_tree, read_outline
+    for pdf in pdfs:
+        try:
+            doc = pymupdf.open(pdf)
+        except Exception as exc:
+            print(f"== {pdf.name}: cannot open ({exc})")
+            continue
+        try:
+            tree = read_outline(doc)
+            print(f"== {pdf.name}  ({doc.page_count} pages)")
+            if tree:
+                print(format_tree(tree, depth))
+            else:
+                print("   (no bookmarks: use --split-pages N or --pages)")
+            print()
+        finally:
+            doc.close()
+    return 0
+
+
 def main(argv=None) -> int:
     setup_console()
     args = build_parser().parse_args(argv)
@@ -115,14 +164,20 @@ def main(argv=None) -> int:
     if not pdfs:
         log.error("no PDF files found for: %s", " ".join(args.inputs))
         return 2
+    if args.list_chapters:
+        return list_chapters(pdfs, max(1, args.chapter_depth))
     from .converter import Converter
     conv = Converter(options_from_args(args))
     ok, failed = [], []
     t0 = time.time()
     for pdf in pdfs:
         try:
-            result = conv.convert(pdf)
-            ok.append(result)
+            parts = conv.plan_parts(pdf)
+            if parts:
+                for result in conv.convert_parts(pdf, parts):
+                    (failed if result.error else ok).append((pdf, result.error) if result.error else result)
+            else:
+                ok.append(conv.convert(pdf))
         except KeyboardInterrupt:
             log.error("interrupted")
             return 130
@@ -135,7 +190,7 @@ def main(argv=None) -> int:
     log.info("done: %d converted, %d failed, %.0fs", len(ok), len(failed), time.time() - t0)
     for r in ok:
         if not r.skipped:
-            log.info("  %s", r.md_path)
+            log.info("  %s", r.output)
     return 1 if failed else 0
 
 

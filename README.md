@@ -1,9 +1,10 @@
 # pdf2word
 
-현재 버전 **v1.0.0** · 변경 내역은 [CHANGELOG.md](CHANGELOG.md)
+현재 버전 **v1.2.0** · 변경 내역은 [CHANGELOG.md](CHANGELOG.md)
 
-논문 PDF 한 편을 **Word 문서(.docx)** 또는 **Obsidian 노트(.md)** 로 바꿔 주는 작은 도구입니다.
-본문·그림·표는 물론 **수식까지** 옮기고, 제목·저자·DOI 같은 서지정보도 자동으로 채워 줍니다.
+PDF를 **Word 문서(.docx)** 또는 **Obsidian 노트(.md)** 로 바꿔 주는 작은 도구입니다.
+논문이면 본문·그림·표는 물론 **수식까지** 옮기고, 제목·저자·DOI 같은 서지정보도 자동으로 채워 줍니다.
+책·매뉴얼·보고서처럼 논문이 아닌 PDF도 되고, 수천 쪽짜리 PDF는 **책갈피(목차)에서 필요한 챕터만 골라** 챕터별 파일로 나눠 변환합니다.
 GPU가 없는 보통 노트북에서 돌아가고, 인터넷은 서지정보 조회에만 씁니다(없어도 됩니다).
 
 ![pdf2word GUI](docs/gui.png)
@@ -14,6 +15,7 @@ GPU가 없는 보통 노트북에서 돌아가고, 인터넷은 서지정보 조
 - ∑ 수식은 **원본을 잘라낸 이미지**를 먼저 넣고, 그 아래에 OCR로 읽은 수식을 둡니다. Word에서는 **편집 가능한 Word 수식**, Obsidian에서는 `$$ … $$` LaTeX입니다. OCR이 미심쩍으면 `⚠ OCR 신뢰도 낮음` 표시가 붙으니 이미지와 대조하면 됩니다.
 - 🖼 그림은 "Figure 3" 캡션에 맞춰 `fig3.png`, `fig3a.png`처럼 이름을 붙입니다.
 - 🔖 DOI를 찾아 제목·저자·저널·연도를 받아 문서 머리(Word) 또는 frontmatter(Obsidian)에 넣습니다.
+- 📑 책갈피가 있는 큰 PDF는 챕터를 골라 `문서명-03-챕터제목.docx`처럼 따로 저장합니다. 책갈피가 없으면 50쪽씩 나눌 수 있습니다.
 
 ---
 
@@ -71,12 +73,18 @@ python -m venv .venv
 ## 2. 사용하기 (GUI)
 
 1. **`main_gui.bat`** 를 더블클릭합니다. (패키지 검사가 끝나면 검은 콘솔 창은 닫히고 GUI 창만 남습니다. 명령 프롬프트나 PowerShell에서 이 폴더로 이동한 뒤 `.\main_gui.bat` 로 실행해도 같습니다.)
-2. **📄 PDF 파일** – `파일 추가`로 논문 PDF를 고릅니다. 여러 개를 한 번에 골라도 되고, `폴더 추가`로 폴더째 넣어도 됩니다.
-3. **📁 저장 위치와 형식** – 기본은 *PDF 옆에 Word 저장*입니다. Obsidian 노트가 필요하면 `Obsidian Markdown`(또는 `둘 다`)을 고르고, `폴더 선택…`으로 vault 안의 폴더를 지정하면 바로 노트가 됩니다.
-4. **∑ 수식** – 기본값 그대로 두면 됩니다. `rapid`는 무료 로컬 OCR, `claude`는 더 정확하지만 Anthropic API 키와 요금이 듭니다.
-5. **✨ 변환 시작** – 아래 로그 창에 진행 상황이 흐르고, 끝나면 **📂 결과 폴더 열기**가 켜집니다.
+2. **📄 PDF 파일** – `파일 추가`로 PDF를 고릅니다. 여러 개를 한 번에 골라도 되고, `폴더 추가`로 폴더째 넣어도 됩니다. 목록에는 쪽수와 책갈피 개수가 함께 보입니다.
+3. **📑 챕터 선택…** (책·매뉴얼처럼 큰 PDF일 때) – 목록에서 파일을 고르고 이 버튼을 누르면 책갈피 트리가 뜹니다. 체크한 항목(하위 포함)이 각각 한 파일이 됩니다. 체크하지 않으면 문서 전체를 하나로 변환하고, 책갈피가 없는 PDF는 같은 창에서 *일정 쪽수마다 나누기*를 쓸 수 있습니다.
+4. **📁 저장 위치와 형식** – 기본은 *PDF 옆에 Word 저장*입니다. Obsidian 노트가 필요하면 `Obsidian Markdown`(또는 `둘 다`)을 고르고, `폴더 선택…`으로 vault 안의 폴더를 지정하면 바로 노트가 됩니다.
+5. **∑ 수식** – 기본값 그대로 두면 됩니다. `rapid`는 무료 로컬 OCR, `claude`는 더 정확하지만 Anthropic API 키와 요금이 듭니다.
+6. **⚙ 문서 종류** – 보통 *자동 판별*로 둡니다. 논문(첫 쪽에 DOI나 초록이 있는 글)은 서지 조회·초록·참고문헌을 처리하고, 책·매뉴얼은 파일명 그대로 저장합니다. 판별이 틀리면 직접 고르세요.
+7. **✨ 변환 시작** – 아래 로그 창에 진행 상황이 흐르고, 끝나면 **📂 결과 폴더 열기**가 켜집니다.
 
-처리 시간은 20쪽 논문 기준 보통 2~8분이고, 수식이 많을수록 깁니다. 같은 논문을 다시 돌리면 OCR 결과가 캐시되어 1분 안팎이면 끝납니다. 마지막에 쓴 설정은 기억됩니다.
+![챕터 선택 창](docs/chapters.png)
+
+챕터별 파일 이름은 `문서명-번호-챕터제목.docx`입니다(예: `Ansys_Fluent_Users_Guide-04-Chapter-4-Starting-and-Executing-Ansys-Fluent.docx`). 번호는 책갈피에서 같은 단계 항목의 순번이라 어떤 챕터를 고르든 바뀌지 않고, 자릿수는 항목 수에 맞춰 `01` 또는 `001`이 됩니다. 챕터가 쪽 중간에서 시작하거나 끝나면 책갈피가 가리키는 제목 줄에서 잘라 이웃 챕터의 내용은 넣지 않습니다.
+
+처리 시간은 20쪽 논문 기준 보통 2~8분이고, 수식이 많을수록 깁니다. 같은 논문을 다시 돌리면 OCR 결과가 캐시되어 1분 안팎이면 끝납니다. 6,056쪽 매뉴얼에서 5쪽짜리 절 하나를 떼어 내는 데는 15초 안팎이 걸립니다. 마지막에 쓴 설정은 기억됩니다.
 
 GUI에 없는 옵션은 **추가 옵션** 칸에 명령줄 옵션을 그대로 적으면 됩니다(예: `--author Kim --year 2024 --citations footnotes`). 옵션 목록은 [5절](#5-고급-명령줄과-옵션)에 있습니다.
 
@@ -133,6 +141,15 @@ Microsoft Office가 없는 PC입니다. Word 수식은 Office에 포함된 변�
 **한 페이지에 그림이 수십 장인 PDF가 너무 느려요.**
 자동으로 이미지 묶음을 가볍게 만들어 처리하지만(`--no-lighten`으로 끌 수 있음), 그래도 느리면 `--pages 1-10`처럼 범위를 나눠 돌리세요.
 
+**책 전체가 아니라 몇 개 챕터만 필요해요.**
+GUI의 **📑 챕터 선택…**에서 체크하세요. 명령줄은 `pdf2word book.pdf --list-chapters`로 번호를 본 뒤 `--chapters 3.1,3.4`처럼 지정합니다. 수백 쪽짜리 챕터는 변환에 수십 분이 걸릴 수 있으니 ▸ 를 눌러 하위 절을 고르는 편이 빠릅니다.
+
+**책갈피가 없는 큰 PDF는요?**
+챕터 선택 창에서 *일정 쪽수마다 나누기*를 켜거나, 명령줄에서 `--split-pages 50`을 쓰면 `문서명-01-p0001-0050.docx`처럼 나뉩니다. `--pages 120-180`으로 범위를 직접 줄 수도 있습니다.
+
+**논문이 아닌데 저자·DOI를 찾으려 하거나, 논문인데 일반 문서로 처리돼요.**
+문서 종류 자동 판별이 틀린 경우입니다. GUI의 **문서 종류**(명령줄 `--doc-type paper` / `--doc-type document`)로 직접 정하세요.
+
 ---
 
 ## 5. 고급: 명령줄과 옵션
@@ -145,6 +162,10 @@ pdf2word paper.pdf -f md -o D:\Vault\papers   # Obsidian 노트를 vault 폴더�
 pdf2word "E:\Download\*.pdf" -f both     # 폴더 안 모든 PDF를 둘 다로
 pdf2word paper.pdf --math-engine claude  # 수식 OCR을 Claude 비전으로
 pdf2word paper.pdf --author Kim --year 2024 --offline   # 서지정보 직접 지정
+pdf2word manual.pdf --list-chapters      # 책갈피 트리와 번호 보기 (--chapter-depth 3 으로 더 깊게)
+pdf2word manual.pdf --chapters 3.1,3.4-3.6   # 고른 챕터만 각각 한 파일로
+pdf2word manual.pdf --chapters all:2     # 2단계 항목(보통 Chapter) 전부
+pdf2word report.pdf --split-pages 50     # 책갈피 없는 PDF를 50쪽씩
 python main_gui.py paper.pdf -f md       # main_gui.py 도 인자를 주면 명령줄로 동작
 ```
 
@@ -154,13 +175,19 @@ python main_gui.py paper.pdf -f md       # main_gui.py 도 인자를 주면 명�
 |---|---|---|
 | `-f, --format` | `docx` | `docx`(Word) / `md`(Obsidian Markdown + 에셋 폴더) / `both` |
 | `-o, --out-dir` | PDF 폴더 | 출력 폴더 |
+| `--doc-type` | `auto` | `paper`(논문: 서지 조회·초록·참고문헌 처리) / `document`(책·매뉴얼·보고서) / `auto`(첫 두 쪽에 DOI·arXiv·Abstract가 있으면 논문) |
+| `--list-chapters` | | 책갈피 트리(번호, 쪽 범위)만 출력하고 변환하지 않음. `--chapter-depth`로 보이는 깊이 조절 |
+| `--chapters` | | 변환할 책갈피 번호: `3,4.2,5.1-5.4`, `all`(1단계 전부), `all:2`(2단계 전부). 항목마다 파일 하나 |
+| `--chapter-split` | `exact` | 이웃 챕터와 쪽을 나눠 쓰는 경계를 책갈피 위치(제목 줄)에서 자름. `page`면 쪽 단위 |
+| `--chapter-template` | `{stem}-{num}-{title}` | 챕터 파일 이름. `{id}`(책갈피 번호) `{p0}` `{p1}`(쪽 범위)도 사용 가능 |
+| `--split-pages` | 0 | N쪽마다 한 파일(책갈피 없는 PDF용). 이름은 `{stem}-{num}-p0001-0050` |
 | `--math-engine` | `rapid` | `rapid`(로컬, 무료) / `claude`(API) / `none`(OCR 없이 이미지만) |
 | `--math-mode` | `both` | `both`(이미지 + OCR 결과) / `latex`(OCR 결과만, 실패·불확실 시 이미지) / `image` |
 | `--docx-math` | `native` | Word 수식: `native`(편집 가능한 수식, Office 필요) / `text`(LaTeX 문자열) |
 | `--author`, `--year`, `--title` | 자동 | 서지정보를 직접 지정 (파일·폴더 이름에 쓰임) |
 | `--offline` | 끔 | CrossRef/arXiv 조회 안 함 |
-| `--asset-template` | `_asset-{author}-{year}` | 에셋 폴더 이름. `{title}`, `{stem}` 사용 가능 |
-| `--name-template` | `{author}-{year}-{title}` | 결과 파일 이름 |
+| `--asset-template` | 종류별 | 에셋 폴더 이름. 논문 `_asset-{author}-{year}`, 일반 문서 `_asset-{stem}`, 챕터 `_asset-{stem}-{num}` |
+| `--name-template` | 종류별 | 결과 파일 이름. 논문 `{author}-{year}-{title}`, 일반 문서 `{stem}` (`{stem}` = PDF 파일 이름) |
 | `--image-links` | `wiki` | `wiki` = `![[…]]`, `markdown` = `![](…)` |
 | `--citations` | `keep` | `footnotes`로 하면 `[12]` → `[^12]` 각주 |
 | `--pages` | 전체 | `1-5,8`처럼 1부터 세는 페이지 범위 |
@@ -193,7 +220,8 @@ print(r.docx_path, r.md_path, r.asset_dir, r.stats)
 3. **Word 수식** – LaTeX → MathML(`latex2mathml`) → OMML(Office의 `MML2OMML.XSL`)로 바꿔 Word 수식 개체로 넣습니다.
 4. **본문 수식** – 글꼴(CM, Symbol, CambriaMath …)·크기·기준선을 보고 ρ_f, u_i 같은 인라인 수식을 찾아 LaTeX로 바꿉니다. Word/MathType 문서에서 사라지는 Symbol 폰트 글자(ρ, ∂, α …)도 복구합니다.
 5. **그림** – 그림 박스를 원본에서 렌더링하고 바로 아래/위 캡션으로 이름을 정합니다. 페이지마다 반복되는 로고는 뺍니다.
-6. **서지정보** – 첫 두 쪽에서 DOI/arXiv ID를 찾아 CrossRef/arXiv API로 받고, 없으면 1쪽의 큰 글자(제목)·그 아래 줄(저자)·연도 패턴으로 추정합니다.
+6. **서지정보** – 첫 두 쪽에서 DOI/arXiv ID를 찾아 CrossRef/arXiv API로 받고, 없으면 1쪽의 큰 글자(제목)·그 아래 줄(저자)·연도 패턴으로 추정합니다. 일반 문서는 PDF 속성의 제목·저자만 씁니다.
+7. **책갈피** – PDF의 목차(outline)를 트리로 읽고, 다음 항목이 시작하는 쪽으로 각 항목의 쪽 범위를 정합니다. 고른 챕터는 그 쪽들만 떼어 낸 부분 문서로 만들어 위 과정을 그대로 거치므로 나머지 수천 쪽은 건드리지 않습니다. 경계 쪽에서는 책갈피가 가리키는 위치 근처에서 제목 글줄을 찾아 그 위(또는 다음 챕터 제목 아래)의 글을 지웁니다.
 
 처리 시간 예(GPU 없는 노트북): MDPI 논문 23쪽·수식 13개 약 1~2분, 학회 논문 24쪽·수식 57개 약 7분. 대부분이 수식 OCR 시간입니다.
 
@@ -205,6 +233,7 @@ print(r.docx_path, r.md_path, r.asset_dir, r.stats)
 - 레이아웃 모델이 수식을 본문으로 분류하면 그 수식은 LaTeX로 바뀌지 않습니다(`-v` 로그에서 페이지별 수식 블록 수를 볼 수 있습니다).
 - Word 수식 변환은 Windows + Office에서만 됩니다. 다른 환경에서는 LaTeX 문자열로 들어갑니다.
 - 스캔 PDF는 Tesseract가 있어야 합니다.
+- 챕터 나누기는 PDF에 든 책갈피를 그대로 믿습니다. 책갈피가 쪽만 가리키고 위치가 없으면 경계는 쪽 단위로만 잘리고, 책갈피 자체가 틀린 PDF는 결과도 틀립니다. 책갈피가 없으면 쪽수로만 나눌 수 있습니다.
 
 ---
 

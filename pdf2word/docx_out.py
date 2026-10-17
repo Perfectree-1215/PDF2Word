@@ -151,6 +151,10 @@ class DocxBuilder:
     def _front_matter(self, keywords: bool = True):
         m = self.meta
         self.doc.add_heading(m.title or "Untitled", 0)
+        container = getattr(m, "container", "")
+        if container:                      # one chapter / page group of a bigger document
+            pages = getattr(m, "part_pages", "")
+            self.doc.add_paragraph(container + (f"  ·  pp. {pages}" if pages else ""))
         if m.authors:
             self.doc.add_paragraph(", ".join(m.authors))
         bits = []

@@ -63,7 +63,15 @@ def build_frontmatter(meta, pdf_path: Path, asset_dir_name: str, version: str, e
     if meta.keywords:
         lines.append("keywords:")
         lines += [f"  - {yaml_str(k)}" for k in meta.keywords]
-    lines += ["tags:", "  - paper"]
+    kind = getattr(meta, "kind", "paper") or "paper"
+    container = getattr(meta, "container", "")
+    if container:                                   # one chapter / page group of a bigger document
+        lines.append(f"book: {yaml_str(container)}")
+        if getattr(meta, "part_pages", ""):
+            lines.append(f"pages_in_pdf: {yaml_str(meta.part_pages)}")
+        if getattr(meta, "part_id", ""):
+            lines.append(f"chapter_id: {yaml_str(meta.part_id)}")
+    lines += ["tags:", f"  - {'chapter' if kind == 'chapter' else 'paper' if kind == 'paper' else 'document'}"]
     lines.append(f"source_pdf: {yaml_str(pdf_path.name)}")
     lines.append(f"assets: {yaml_str(asset_dir_name)}")
     lines.append(f"converted: {_dt.date.today().isoformat()}")
@@ -352,17 +360,20 @@ def _collapse(md: str) -> str:
 
 # ----------------------------------------------------------------------------- entry point
 
-def postprocess(md: str, options) -> str:
+def postprocess(md: str, options, paper: bool = True) -> str:
+    """General clean-up for every document; the paper-specific steps (journal labels, author
+    line, abstract callout, reference list) only when `paper` is True."""
     md = _normalize_text(md)
     md = _merge_title_lines(md)
     md = _fix_math_delimiters(md)
     md = _clean_headings(md)
-    md = _clean_front_matter(md)
-    if getattr(options, "abstract_callout", True):
-        md = _abstract_callout(md)
-    md = _split_merged_references(md)
-    if getattr(options, "citations", "keep") == "footnotes":
-        md = citations_to_footnotes(md)
+    if paper:
+        md = _clean_front_matter(md)
+        if getattr(options, "abstract_callout", True):
+            md = _abstract_callout(md)
+        md = _split_merged_references(md)
+        if getattr(options, "citations", "keep") == "footnotes":
+            md = citations_to_footnotes(md)
     md = _fix_tables(md)
     md = _collapse(md)
     return md

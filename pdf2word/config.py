@@ -4,22 +4,39 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+# default name templates, chosen by document type when the user gives none
+PAPER_NAME_TEMPLATE = "{author}-{year}-{title}"
+PAPER_ASSET_TEMPLATE = "_asset-{author}-{year}"
+DOC_NAME_TEMPLATE = "{stem}"
+DOC_ASSET_TEMPLATE = "_asset-{stem}"
+CHAPTER_NAME_TEMPLATE = "{stem}-{num}-{title}"
+CHAPTER_ASSET_TEMPLATE = "_asset-{stem}-{num}"
+
 
 @dataclass
 class Options:
-    """All knobs of a conversion. Defaults are tuned for journal/conference papers."""
+    """All knobs of a conversion. Defaults are tuned for journal/conference papers; books,
+    manuals and reports are handled by doc_type='document' (auto-detected by default)."""
 
     # --- output ------------------------------------------------------------
     format: str = "docx"                        # "docx" | "md" | "both"
     docx_math: str = "native"                   # "native" (Word equations via Office XSL) | "text"
     out_dir: Optional[Path] = None              # default: the folder of the PDF
-    asset_template: str = "_asset-{author}-{year}"
-    name_template: str = "{author}-{year}-{title}"
+    asset_template: Optional[str] = None        # None -> by document type (see the constants above)
+    name_template: Optional[str] = None         # None -> by document type
     overwrite: bool = True
     image_links: str = "wiki"                   # "wiki" -> ![[...]], "markdown" -> ![](...)
     block_ids: bool = True                      # add ^eq-3 / ^fig-2 block anchors
     citations: str = "keep"                     # "keep" | "footnotes"
     abstract_callout: bool = True
+
+    # --- document type / chapters -------------------------------------------
+    doc_type: str = "auto"                      # "auto" | "paper" | "document" (book, manual, report)
+    chapters: Optional[str] = None              # bookmark ids to convert separately: "3,4.2-4.5", "all", "all:2"
+    chapter_split: str = "exact"                # "exact" = cut at the bookmark position | "page" = whole pages
+    chapter_template: str = CHAPTER_NAME_TEMPLATE   # file name of one chapter / page group
+    split_pages: int = 0                        # > 0: one file per N pages (for PDFs without bookmarks)
+    chapter_depth: int = 2                      # depth shown by --list-chapters
 
     # --- metadata ----------------------------------------------------------
     online: bool = True                         # CrossRef / arXiv lookup

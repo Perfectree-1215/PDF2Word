@@ -18,7 +18,9 @@ ARXIV_RE = re.compile(r"arXiv:\s*(\d{4}\.\d{4,5})(?:v\d+)?", re.I)
 ARXIV_URL_RE = re.compile(r"arxiv\.org/(?:abs|pdf)/(\d{4}\.\d{4,5})(?:v\d+)?", re.I)
 YEAR_RE = re.compile(r"\b(19[5-9]\d|20[0-4]\d)\b")
 _USER_AGENT = "pdf2word/0.1 (https://github.com/pdf2word)"
-_BAD_TITLES = re.compile(r"^(untitled|microsoft word.*|doc\d*|\d[\w-]*|.*\.(docx?|tex|pdf|indd))$|^\s*$", re.I)
+_BAD_TITLES = re.compile(r"^(untitled.*|microsoft (word|powerpoint).*|powerpoint.*|.*프레젠테이션|presentation\d*|"
+                         r"slide ?\d+|슬라이드 ?\d+|doc(ument)?\d*|제목 없음.*|무제.*|\d[\w-]*|.*\.(docx?|pptx?|tex|pdf|indd))$"
+                         r"|^\s*$", re.I)
 _BAD_AUTHORS = re.compile(r"^(user|admin|administrator|owner|author|confit|unknown|windows|\s*)$", re.I)
 _NAME_SUFFIXES = {"jr", "sr", "ii", "iii", "iv", "phd", "md", "dr"}
 _PARTICLES = {"van", "von", "de", "der", "den", "del", "della", "di", "da", "le", "la", "du",
@@ -42,7 +44,11 @@ class PaperMeta:
     arxiv: str = ""
     url: str = ""
     keywords: list = field(default_factory=list)
-    source: str = ""                # crossref | arxiv | heuristic (+override)
+    source: str = ""                # crossref | arxiv | heuristic | document | outline (+override)
+    kind: str = "paper"             # paper | document | chapter | pages
+    container: str = ""             # title of the whole document when this is one chapter / page group
+    part_pages: str = ""            # "145-176": pages of the part in the PDF (1-based)
+    part_id: str = ""               # bookmark id of the chapter ("3.2")
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -93,6 +99,8 @@ def surname(name: str) -> str:
     name = clean_author(name)
     if not name:
         return ""
+    if re.fullmatch(r"[가-힣]{1,2}\s+[가-힣]{1,3}", name):      # '신 지원': Korean order, surname first
+        return name.split()[0]
     if "," in name:
         return name.split(",", 1)[0].strip()
     parts = name.split(" ")
@@ -310,6 +318,39 @@ def _normalize_meta(meta: PaperMeta) -> PaperMeta:
     meta.keywords = [_fix_text(k) for k in meta.keywords if _fix_text(k)]
     meta.first_author = _fix_text(meta.first_author)
     return meta
+
+
+# ----------------------------------------------------------------------------- document type
+
+def detect_doc_type(doc, first_pages_text: str) -> tuple:
+    """('paper' | 'document', reason). Papers carry a DOI / arXiv id or an abstract on the first
+    pages; everything else (books, manuals, reports, slides) is a plain document."""
+    if find_doi(first_pages_text):
+        return "paper", "DOI found"
+    if find_arxiv(first_pages_text):
+        return "paper", "arXiv id found"
+    if doc.page_count <= 80 and re.search(r"\babstract\b", first_pages_text, re.I):
+        return "paper", "abstract on the first pages"
+    return "document", f"{doc.page_count} pages, no DOI / abstract"
+
+
+def document_meta(doc, pdf_path) -> PaperMeta:
+    """Metadata of a non-paper document: the PDF's own title/author fields, else the file name."""
+    meta = PaperMeta(source="document", kind="document")
+    pdfmeta = doc.metadata or {}
+    title = " ".join((pdfmeta.get("title") or "").split())
+    if not title or len(title) < 3 or _BAD_TITLES.match(title):
+        title = re.sub(r"[_]+", " ", getattr(pdf_path, "stem", str(pdf_path))).strip()
+    meta.title = title
+    author_field = (pdfmeta.get("author") or "").strip()
+    if author_field and not _BAD_AUTHORS.match(author_field) and re.search(r"[A-Za-zÀ-ɏ가-힣]", author_field):
+        meta.authors = split_author_line(author_field.replace(";", ","))
+        if meta.authors:
+            meta.first_author = surname(meta.authors[0])
+    m = re.search(r"D:(\d{4})", pdfmeta.get("creationDate") or pdfmeta.get("modDate") or "")
+    if m:
+        meta.year = int(m.group(1))
+    return _normalize_meta(meta)
 
 
 # ----------------------------------------------------------------------------- orchestration
