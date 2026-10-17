@@ -24,13 +24,27 @@ GPU가 없는 보통 노트북에서 돌아가고, 인터넷은 서지정보 조
 | 항목 | 비고 |
 |---|---|
 | Windows 10/11 | macOS, Linux에서도 되지만 Word *수식* 변환은 Windows + Microsoft Office에서만 됩니다(없으면 LaTeX 문자열로 대신 적음). |
-| Python 3.10 이상 | 명령 프롬프트에서 `python --version` 으로 확인. 없으면 [python.org](https://www.python.org/downloads/)에서 설치하고 "Add Python to PATH"에 체크. |
-| uv (권장) | 가상환경을 쉽게 만들어 줍니다: `pip install uv` |
+| Python 3.10 이상 | 명령 프롬프트에서 `python --version` 으로 확인. 없으면 [python.org](https://www.python.org/downloads/)에서 설치하고 "Add Python to PATH"에 체크. (uv가 있으면 uv가 Python을 대신 내려받습니다.) |
+| uv (선택, 권장) | 설치가 훨씬 빠릅니다: `pip install uv` |
 
 **설치**
 
 1. 이 저장소를 `git clone` 하거나 ZIP으로 받아 적당한 폴더에 풉니다.
-2. 그 폴더에서 명령 프롬프트(또는 PowerShell)를 열고 아래 두 줄을 실행합니다.
+2. **`main_gui.bat`** 를 더블클릭합니다. 처음에는 가상환경을 만들고 필요한 패키지를 자동으로 설치합니다(인터넷 필요, 몇 분). 끝나면 창이 뜹니다.
+3. 끝입니다. 첫 변환 때 수식 인식 모델(약 170 MB)을 한 번 내려받습니다.
+
+`main_gui.bat`가 쓰는 가상환경은 아래 순서로 먼저 찾은 것입니다.
+
+| 순서 | 위치 |
+|---|---|
+| 1 | 환경변수 `PDF2WORD_VENV`에 적은 폴더 |
+| 2 | 이 폴더 안의 `.venv` 또는 `venv` |
+| 3 | `D:\Venvs_collec\Common_venv\pdf2word_venv` (`D:\Venvs_collec\Common_venv` 폴더가 있는 PC) |
+| 4 | 이 폴더 안에 새로 만드는 `.venv` |
+
+`requirements.txt`가 바뀌거나 폴더를 옮기면 다음 실행 때 패키지를 자동으로 다시 맞춥니다.
+
+직접 설치하고 싶으면 이 폴더에서 명령 프롬프트(또는 PowerShell)를 열고:
 
 ```bash
 uv venv
@@ -43,18 +57,20 @@ uv pip install -e .
 uv가 없으면 대신:
 
 ```bash
-python -m venv .venv && .venv\Scripts\activate && pip install -e .
+python -m venv .venv
 ```
 
-3. 끝입니다. 첫 변환 때 수식 인식 모델(약 170 MB)을 한 번 내려받습니다.
+```bash
+.venv\Scripts\pip install -e .
+```
 
-> 폴더를 다른 곳으로 옮기면 `.venv` 폴더를 지우고 2번을 다시 실행하세요. 가상환경은 만든 위치에 묶여 있습니다.
+> 폴더를 옮겼을 때: 폴더 안에 `.venv`가 있었다면 지우세요(가상환경은 만든 위치에 묶여 있습니다). 그다음 `main_gui.bat`를 실행하면 다시 연결됩니다.
 
 ---
 
 ## 2. 사용하기 (GUI)
 
-1. **`main_gui.bat`** 를 더블클릭합니다. (콘솔 창 없이 창만 뜹니다. 가상환경 안에서 `python main_gui.py` 를 실행해도 같습니다.)
+1. **`main_gui.bat`** 를 더블클릭합니다. (패키지 검사가 끝나면 검은 콘솔 창은 닫히고 GUI 창만 남습니다. 명령 프롬프트나 PowerShell에서 이 폴더로 이동한 뒤 `.\main_gui.bat` 로 실행해도 같습니다.)
 2. **📄 PDF 파일** – `파일 추가`로 논문 PDF를 고릅니다. 여러 개를 한 번에 골라도 되고, `폴더 추가`로 폴더째 넣어도 됩니다.
 3. **📁 저장 위치와 형식** – 기본은 *PDF 옆에 Word 저장*입니다. Obsidian 노트가 필요하면 `Obsidian Markdown`(또는 `둘 다`)을 고르고, `폴더 선택…`으로 vault 안의 폴더를 지정하면 바로 노트가 됩니다.
 4. **∑ 수식** – 기본값 그대로 두면 됩니다. `rapid`는 무료 로컬 OCR, `claude`는 더 정확하지만 Anthropic API 키와 요금이 듭니다.
@@ -106,10 +122,10 @@ Microsoft Office가 없는 PC입니다. Word 수식은 Office에 포함된 변�
 첫 변환 때 수식 인식 모델 약 170 MB를 내려받습니다. 한 번만 받습니다.
 
 **"pdf2word 패키지를 불러올 수 없습니다" 창이 떠요.**
-가상환경 밖의 파이썬으로 실행된 것입니다. `main_gui.bat`로 실행하거나 `.venv\Scripts\python.exe main_gui.py`를 쓰세요.
+가상환경 밖의 파이썬으로 실행된 것입니다. `main_gui.bat`로 실행하세요. 직접 실행하려면 가상환경의 `Scripts\python.exe`로 `main_gui.py`를 여세요.
 
 **폴더를 옮겼더니 안 돼요.**
-`.venv`를 지우고 1절의 설치 2번을 다시 하세요.
+폴더 안에 `.venv`가 있었다면 지우고 `main_gui.bat`를 다시 실행하세요. 가상환경을 만들고 패키지를 다시 설치합니다.
 
 **스캔한 PDF(글자가 선택되지 않는 PDF)는요?**
 글자가 없으면 본문을 뽑을 수 없습니다. Tesseract OCR을 설치한 뒤 `--ocr-pages` 옵션을 쓰면 됩니다.
