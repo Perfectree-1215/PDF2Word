@@ -10,8 +10,8 @@
 | 항목 | 비고 |
 |---|---|
 | Git | 저장소 `https://github.com/Perfectree-1215/PDF2Word.git` |
-| Python **3.10 ~ 3.12** | 3.13 이상은 설치가 실패합니다. 수식 OCR 패키지 `rapid_latex_ocr`가 `numpy<2`를 요구하는데 numpy 1.x에는 3.13용 wheel이 없기 때문입니다. uv가 있으면 uv가 맞는 버전을 내려받습니다. |
-| uv (권장) | `pip install uv` 또는 https://docs.astral.sh/uv/ |
+| Python **3.10 ~ 3.12** | 3.13 이상은 설치가 실패합니다. 수식 OCR 패키지 `rapid_latex_ocr`가 `numpy<2`를 요구하는데 numpy 1.x에는 3.13용 wheel이 없기 때문입니다. 개발 환경(`uv sync`)과 `main_gui.bat`가 만드는 환경은 모두 **3.12**이고, PC에 3.12가 없으면 uv가 내려받습니다. |
+| uv (권장) | `pip install uv`, `winget install astral-sh.uv` 또는 https://docs.astral.sh/uv/ . `main_gui.bat`는 uv가 없고 3.12도 없으면 공식 설치 스크립트로 uv를 설치합니다. |
 | Windows + Microsoft Office (선택) | Word **수식 개체** 변환에만 필요합니다(Office의 `MML2OMML.XSL`). 없으면 LaTeX 문자열로 들어갑니다. macOS/Linux에서도 나머지는 다 됩니다. |
 | Tesseract (선택) | 스캔 PDF `--ocr-pages` 에만 필요 |
 | GPU | 필요 없음. **torch 계열 의존성을 넣지 않는 것**이 이 프로젝트의 원칙입니다(CPU 전용 ONNX). |
@@ -31,8 +31,10 @@ uv sync --locked --extra dev
   `.venv\Scripts\pip install -e ".[dev]"`.
 - `main_gui.bat`는 폴더 안의 `.venv`를 가장 먼저 씁니다(그다음 `venv`, 환경변수 `PDF2WORD_VENV`,
   `D:\Venvs_collec\Common_venv\pdf2word_venv`). 개발 PC에서 쓰던 `D:\Venvs_collec\...`는 그 PC의 관례일 뿐이고
-  새 PC에서는 `.venv`면 충분합니다. 환경이 없으면 bat가 3.10~3.12로 직접 만들고, Python 버전이 범위 밖인 환경은
-  이유를 안내하고 멈춥니다.
+  새 PC에서는 `.venv`면 충분합니다. 환경이 없으면 bat가 **항상 Python 3.12**로 만듭니다(PC의 Python 버전과 무관):
+  uv가 있으면 `uv venv --python 3.12`(없는 3.12는 uv가 내려받음), uv가 없으면 `py -3.12`/3.12인 `python`, 둘 다 없으면
+  uv를 설치(astral.sh 공식 스크립트 → winget)한 뒤 uv로. Python 버전이 3.10~3.12 밖인 기존 환경은 이유를 안내하고
+  멈춥니다.
 
 의존성을 바꿨을 때:
 
@@ -119,8 +121,9 @@ Theory Guide로 확인했습니다. 새 PC에서는 같은 종류의 PDF를 아�
   있습니다. 잠시 뒤 또는 탐색기에서 지우면 됩니다. 저장소를 Drive 밖에 두면 겪지 않습니다.
 - **한글 경로**: Git Bash에서 `cmd /c some.bat`로 bat를 부르면 작업 폴더가 깨져 "not recognized"가 납니다.
   PowerShell에서 `.\main_gui.bat`로 부르거나 탐색기에서 더블클릭하세요.
-- **uv가 고른 Python**: PATH에 LibreOffice 등이 넣은 다른 Python(3.13)이 있으면 범위를 주지 않은 `uv venv`가 그것을
-  집어 실패할 수 있습니다. bat는 `>=3.10,<3.13`을 명시해서 피합니다. uv 관리 Python 저장소
+- **uv가 고른 Python**: PATH에 LibreOffice 등이 넣은 다른 Python(3.13)이 있으면 버전을 주지 않은 `uv venv`가 그것을
+  집어 실패할 수 있습니다. bat는 `--python 3.12`를 명시하고 `UV_PYTHON_DOWNLOADS=automatic`을 켜서(사용자 uv 설정이
+  `python-downloads = never`여도) 3.12를 쓰거나 내려받게 합니다. uv 관리 Python 저장소
   (`%APPDATA%\uv\python`)가 깨지면 `uv python install`이 "Missing expected target directory" 오류를 내는데, 그 폴더의
   빈 `cpython-*` 디렉터리를 지우면 됩니다.
 - **Claude Code**: 루트의 `CLAUDE.md`가 프로젝트 요약이고, `.claude/`의 공유 설정은 커밋되며 `settings.local.json`만
