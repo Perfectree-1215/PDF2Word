@@ -8,6 +8,7 @@ PDF(논문·책·매뉴얼) → Word(.docx) 또는 Obsidian Markdown. 레이아�
 
 - Python **3.10~3.12만** (rapid_latex_ocr → numpy<2 → 3.13 이상 wheel 없음). 범위는 `pyproject.toml`
   `requires-python`, `.python-version`, `main_gui.bat`의 `PY_MIN/PY_MAX/PY_TOP` 세 곳에 같이 적혀 있다.
+  단 `main_gui.bat`는 가상환경을 **3.12만** 만들고 받아들인다(`PY_MIN=PY_TOP=3.12`, uv가 없으면 설치해서 3.12를 내려받음).
 - 환경: `uv sync --locked --extra dev` (`.venv`, 3.12). 의존성을 바꾸면 `pyproject.toml`과 `requirements.txt`를
   같이 고치고 `uv lock`.
 - 테스트: `.venv\Scripts\python -m pytest tests -q` (24개, 모델·네트워크 불필요, 약 7초).

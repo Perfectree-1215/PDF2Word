@@ -33,8 +33,8 @@ uv sync --locked --extra dev
   `D:\Venvs_collec\Common_venv\pdf2word_venv`). 개발 PC에서 쓰던 `D:\Venvs_collec\...`는 그 PC의 관례일 뿐이고
   새 PC에서는 `.venv`면 충분합니다. 환경이 없으면 bat가 **항상 Python 3.12**로 만듭니다(PC의 Python 버전과 무관):
   uv가 있으면 `uv venv --python 3.12`(없는 3.12는 uv가 내려받음), uv가 없으면 `py -3.12`/3.12인 `python`, 둘 다 없으면
-  uv를 설치(astral.sh 공식 스크립트 → winget)한 뒤 uv로. Python 버전이 3.10~3.12 밖인 기존 환경은 이유를 안내하고
-  멈춥니다.
+  uv를 설치(astral.sh 공식 스크립트 → winget)한 뒤 uv로. 기존 환경도 Python이 3.12가 아니면 이유를 안내하고 멈춥니다
+  (bat의 `PY_MIN`/`PY_MAX`가 3.12/3.13).
 
 의존성을 바꿨을 때:
 
@@ -42,7 +42,8 @@ uv sync --locked --extra dev
    읽어 빠진 패키지를 찾고, 이 파일이 바뀌면 다음 실행 때 패키지를 다시 맞춥니다.
 2. `uv lock` 을 돌려 `uv.lock`을 갱신하고 함께 커밋합니다.
 3. Python 지원 범위를 바꾸면 `pyproject.toml`의 `requires-python`, `.python-version`, `main_gui.bat`의
-   `PY_MIN / PY_MAX / PY_TOP` 세 곳을 같이 바꿉니다.
+   `PY_MIN / PY_MAX / PY_TOP` 세 곳을 같이 봅니다. 현재 패키지 자체(`requires-python`)는 3.10~3.12에서 돌지만,
+   `main_gui.bat`는 가상환경을 **3.12만** 만들고 받아들입니다(`PY_MIN=3.12`).
 
 ## 3. 실행
 

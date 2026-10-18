@@ -10,9 +10,11 @@ rem  Python: the virtual environment is ALWAYS created with Python 3.12 (PY_TOP)
 rem  whatever Python versions this PC has installed.  The equation OCR package
 rem  rapid_latex_ocr requires numpy < 2, and numpy 1.x has no wheels for Python
 rem  3.13 or newer, so the packages cannot be installed into a newer interpreter.
-rem  An existing environment is accepted when its Python is 3.10 - 3.12
-rem  (PY_MIN <= version < PY_MAX) - keep these three values in sync with
-rem  requires-python in pyproject.toml and .python-version.
+rem  An existing environment is accepted only when its Python is 3.12 as well
+rem  (PY_MIN <= version < PY_MAX, both set to 3.12 / 3.13): an environment made
+rem  elsewhere with another version is refused with an explanation.  Keep PY_TOP
+rem  in sync with .python-version (3.12); pyproject.toml's requires-python stays
+rem  the wider range the package itself can run on.
 rem
 rem  Virtual environment - the first match wins ("this folder" is the folder
 rem  that contains this file):
@@ -46,7 +48,7 @@ set "SHARED_VENV=%SHARED_PARENT%\pdf2word_venv"
 
 rem ---- supported Python range: PY_MIN <= version < PY_MAX; PY_TOP = the version
 rem ---- new environments are created with -----------------------------------
-set "PY_MIN=3.10"
+set "PY_MIN=3.12"
 set "PY_MAX=3.13"
 set "PY_TOP=3.12"
 set "PY_CHECK=import sys; lo = tuple(int(x) for x in '%PY_MIN%'.split('.')); hi = tuple(int(x) for x in '%PY_MAX%'.split('.')); sys.exit(0 if lo <= sys.version_info[:2] < hi else 1)"
@@ -225,7 +227,7 @@ if not errorlevel 1 set /p VENV_PYNUM=<"%TEMP%\pdf2word-pyver.txt"
 if defined VENV_PYNUM set "VENV_PYVER=Python %VENV_PYNUM%"
 del "%TEMP%\pdf2word-pyver.txt" 2>nul
 echo [pdf2word] ERROR: the environment %VENV%
-echo [pdf2word]        uses %VENV_PYVER%, but pdf2word needs Python %PY_MIN% - %PY_TOP%.
+echo [pdf2word]        uses %VENV_PYVER%, but pdf2word needs Python %PY_TOP%.
 echo.
 echo   To fix: delete that folder (or set PDF2WORD_VENV=^<folder^> to use another one) and
 echo   run this file again - a new environment with Python %PY_TOP% is created.
