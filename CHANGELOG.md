@@ -3,22 +3,22 @@
 버전은 `pdf2word/__init__.py`의 `__version__` 한 곳에서 관리합니다. 형식은 `MAJOR.MINOR.PATCH`이며
 GUI와 결과물에는 `v1.0`처럼 앞 두 자리만 표시합니다.
 
-## 미공개
+## v1.4.0 — 2026-10-18
 
-- `main_gui.bat`: 가상환경을 PC에 설치된 Python 버전과 무관하게 **항상 Python 3.12**로 만듦. uv가 있으면
-  `uv venv --python 3.12`(설치된 3.12가 없으면 uv가 내려받음), uv가 없으면 `py -3.12`(또는 3.12인 `python`), 둘 다 없으면
-  uv를 공식 설치 스크립트(astral.sh, 실패 시 winget)로 설치한 뒤 uv로 만듦. 그래서 3.13/3.14만 깔린 PC나 Python이 없는
-  PC에서도 더블클릭 한 번으로 됨. 이유: PC의 기본 Python이 3.12가 아니면 환경 생성·패키지 설치가 실패하던 문제.
-  3.10/3.11로 새 환경을 만들던 대체 경로는 없앴고, 기존 가상환경도 3.12가 아니면(`PY_MIN=3.12`) 받아들이지 않고 안내 후 멈춤.
-  `pyproject.toml`의 `requires-python`도 `>=3.12,<3.13`으로 올리고 `uv lock`을 다시 돌림(3.10/3.11 전용 패키지
-  exceptiongroup·tomli 등이 lock에서 빠짐). uv는 PATH 외에
-  `%USERPROFILE%\.local\bin`과 WinGet 폴더에서도 찾음. 사용자 uv 설정이 다운로드를 막아도 되도록 `UV_PYTHON_DOWNLOADS=automatic`
-- `main_gui.bat`: 가상환경을 만들 때 Python 3.10~3.12만 쓰도록 함. uv는 `>=3.10,<3.13`에 맞는 Python을 고르거나
-  내려받고, uv가 없으면 `py -3.12`, `-3.11`, `-3.10` 순으로 찾은 뒤 `py -3`/`python`은 버전이 범위 안일 때만 씀.
-  이미 있는 가상환경의 Python이 범위 밖이면 패키지 설치 도중 실패하는 대신 이유와 조치(폴더 삭제 또는 `PDF2WORD_VENV`)를
-  안내하고 멈춤. 이유: 수식 OCR 패키지 `rapid_latex_ocr`가 `numpy<2`를 요구하는데 numpy 1.x는 Python 3.13 이상용
-  배포 파일이 없어 설치가 실패함. 같은 범위를 `pyproject.toml`의 `requires-python`(`>=3.10,<3.13`)과 새 파일
-  `.python-version`(3.12, `uv venv`가 읽음)에도 적음
+설치 환경을 Python 3.12 하나로 고정해, PC에 어떤 Python이 깔려 있든(또는 없든) `main_gui.bat` 더블클릭 한 번으로 설치가
+끝나게 했습니다. 기능 변화는 없고 설치·개발 환경만 바뀝니다.
+
+- Python **3.12만** 지원합니다(이전 3.10~3.12). 수식 OCR 패키지 `rapid_latex_ocr`가 `numpy<2`를 요구해 3.13 이상은 원래
+  안 됐고, 이번에 하한도 3.12로 올려 `pyproject.toml`의 `requires-python`(`>=3.12,<3.13`), `.python-version`,
+  `main_gui.bat`의 `PY_MIN/PY_MAX/PY_TOP` 세 곳을 하나로 맞췄습니다. `uv lock`을 다시 돌려 3.10/3.11 전용 패키지
+  (exceptiongroup, tomli 등)가 lock에서 빠졌습니다
+- `main_gui.bat`: 가상환경을 PC에 설치된 Python과 무관하게 **항상 Python 3.12로** 만듭니다. uv가 있으면
+  `uv venv --python 3.12`(설치된 3.12가 없으면 uv가 내려받음), uv가 없고 `py -3.12`(또는 3.12인 `python`)가 있으면 그것으로,
+  둘 다 없으면 uv를 공식 설치 스크립트(astral.sh, 실패 시 winget)로 설치한 뒤 uv로 만듭니다. 그래서 3.13/3.14만 깔린 PC나
+  Python이 없는 PC에서도 됩니다. uv는 PATH 외에 `%USERPROFILE%\.local\bin`과 WinGet 폴더에서도 찾고, 사용자 uv 설정이
+  다운로드를 막아도 되도록 `UV_PYTHON_DOWNLOADS=automatic`을 켭니다
+- `main_gui.bat`: 이미 있는 가상환경도 Python이 3.12가 아니면(예: 다른 PC에서 3.11이나 3.13으로 만든 것) 패키지 설치 도중
+  실패하는 대신 이유와 조치(폴더 삭제 후 재실행, 또는 `PDF2WORD_VENV`)를 안내하고 멈춥니다
 - `.gitignore`: "배포에 필요한 파일만" 올리던 규칙을 개발용으로 바꿈. 루트의 `*.md`(메모·설계 문서), `.claude/`(공유 설정;
   `settings.local.json`만 제외), `.vscode/`의 `settings/launch/tasks/extensions.json`, `tests/` 아래의 작은 PDF
   픽스처는 더 이상 제외하지 않고, 생성물·가상환경·PC별 설정·비밀 값(`.env`, `*.key`)·논문 PDF와 변환 결과만 제외
