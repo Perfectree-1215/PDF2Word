@@ -1,0 +1,23 @@
+# Normalize text files to LF in the repository; check out with the platform default,
+# except the Windows launcher which cmd.exe wants with CRLF on every machine.
+* text=auto
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.py text
+*.md text
+*.toml text
+*.txt text
+*.json text
+*.yml text
+*.yaml text
+uv.lock text
+.python-version text
+
+# binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.pdf binary
+*.docx binary
+*.onnx binary

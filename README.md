@@ -253,11 +253,12 @@ print(r.docx_path, r.md_path, r.asset_dir, r.stats)
 ## 8. 테스트와 개발
 
 ```bash
-python tests/test_basic.py   # 순수 함수 테스트 (모델·네트워크 불필요)
-python tests/test_docx.py    # Word 출력 테스트
-pdf2word sample.pdf --pages 1-5 -v   # 실제 변환 확인
+uv sync --locked --extra dev          # 개발용 환경(.venv, Python 3.12, pytest 포함)
+.venv\Scripts\python -m pytest tests -q   # 순수 함수 테스트 24개 (모델·네트워크 불필요)
+pdf2word sample.pdf --pages 1-5 -v    # 실제 변환 확인
 ```
 
+다른 PC에서 개발을 이어가는 절차, 코드 지도, 의존성·버전 올리는 규칙은 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)에 있습니다.
 버전은 `pdf2word/__init__.py`의 `__version__` 한 곳에서 올립니다(`pyproject.toml`이 읽어 감). 변경 내역은 [CHANGELOG.md](CHANGELOG.md)에 적습니다.
 
 ---

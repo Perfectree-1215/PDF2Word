@@ -14,6 +14,9 @@ GUI와 결과물에는 `v1.0`처럼 앞 두 자리만 표시합니다.
 - `.gitignore`: "배포에 필요한 파일만" 올리던 규칙을 개발용으로 바꿈. 루트의 `*.md`(메모·설계 문서), `.claude/`(공유 설정;
   `settings.local.json`만 제외), `.vscode/`의 `settings/launch/tasks/extensions.json`, `tests/` 아래의 작은 PDF
   픽스처는 더 이상 제외하지 않고, 생성물·가상환경·PC별 설정·비밀 값(`.env`, `*.key`)·논문 PDF와 변환 결과만 제외
+- 다른 PC에서 개발을 이어가기 위한 정리: `docs/DEVELOPMENT.md`(환경 만들기 `uv sync --locked --extra dev`, 실행·테스트,
+  코드 지도, 의존성·버전 규칙, 환경별 문제), 루트 `CLAUDE.md`(Claude Code용 프로젝트 요약), `.gitattributes`
+  (`main_gui.bat`는 어느 PC에서든 CRLF로 체크아웃), `.editorconfig`
 
 ## v1.3.0 — 2026-10-18
 
