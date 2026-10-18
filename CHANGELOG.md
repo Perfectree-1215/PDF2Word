@@ -3,6 +3,18 @@
 버전은 `pdf2word/__init__.py`의 `__version__` 한 곳에서 관리합니다. 형식은 `MAJOR.MINOR.PATCH`이며
 GUI와 결과물에는 `v1.0`처럼 앞 두 자리만 표시합니다.
 
+## 미공개
+
+- `main_gui.bat`: 가상환경을 만들 때 Python 3.10~3.12만 쓰도록 함. uv는 `>=3.10,<3.13`에 맞는 Python을 고르거나
+  내려받고, uv가 없으면 `py -3.12`, `-3.11`, `-3.10` 순으로 찾은 뒤 `py -3`/`python`은 버전이 범위 안일 때만 씀.
+  이미 있는 가상환경의 Python이 범위 밖이면 패키지 설치 도중 실패하는 대신 이유와 조치(폴더 삭제 또는 `PDF2WORD_VENV`)를
+  안내하고 멈춤. 이유: 수식 OCR 패키지 `rapid_latex_ocr`가 `numpy<2`를 요구하는데 numpy 1.x는 Python 3.13 이상용
+  배포 파일이 없어 설치가 실패함. 같은 범위를 `pyproject.toml`의 `requires-python`(`>=3.10,<3.13`)과 새 파일
+  `.python-version`(3.12, `uv venv`가 읽음)에도 적음
+- `.gitignore`: "배포에 필요한 파일만" 올리던 규칙을 개발용으로 바꿈. 루트의 `*.md`(메모·설계 문서), `.claude/`(공유 설정;
+  `settings.local.json`만 제외), `.vscode/`의 `settings/launch/tasks/extensions.json`, `tests/` 아래의 작은 PDF
+  픽스처는 더 이상 제외하지 않고, 생성물·가상환경·PC별 설정·비밀 값(`.env`, `*.key`)·논문 PDF와 변환 결과만 제외
+
 ## v1.3.0 — 2026-10-18
 
 매뉴얼(Ansys Fluent Theory Guide 등)을 챕터별로 변환하며 드러난 네 가지를 고쳤습니다.

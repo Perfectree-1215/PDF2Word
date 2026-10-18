@@ -1,40 +1,62 @@
 # ---------------------------------------------------------------------------
-# pdf2word: only the files needed to install and run the tool are published.
-# Everything below stays on the development PC.
+# pdf2word - what is NOT committed.
+# The repository carries everything needed to develop on another PC: sources,
+# tests, docs and notes (*.md anywhere), uv.lock, .python-version, the launcher
+# and shared editor / Claude Code settings.  Only generated files, per-machine
+# state, secrets and copyrighted PDFs / conversion results stay local.
 # ---------------------------------------------------------------------------
 
-# Python / packaging
+# Python / packaging (generated)
 __pycache__/
-*.pyc
+*.py[cod]
 *.egg-info/
 build/
 dist/
+.eggs/
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 
-# virtual environments (recreate with `uv venv` + `uv pip install -e .`)
+# virtual environments (main_gui.bat recreates them; or `uv venv` + `uv pip install -e .`)
 .venv/
 venv/
+env/
 
-# editor / tool state
-.obsidian/
-.claude/
-.vscode/
+# per-machine state of editors and tools (shared settings stay in the repo)
+.vscode/*
+!.vscode/settings.json
+!.vscode/launch.json
+!.vscode/tasks.json
+!.vscode/extensions.json
 .idea/
+.obsidian/workspace*.json
+.obsidian/cache
+.claude/settings.local.json
+.claude/*.local.*
 
-# local backups and scratch
-backup/
+# secrets (API keys etc.)
+.env
+.env.*
+*.key
+
+# logs, scratch, local backups, OS clutter
 *.log
 *.tmp
 .pdf2word-tmp/
+backup/
+desktop.ini
+Thumbs.db
+.DS_Store
 
-# papers and conversion results must never be committed (copyrighted content)
+# papers and conversion results must never be committed (copyrighted content).
+# Convert into a folder outside the repository or into out/ below.
 *.pdf
 *.docx
 ~$*.docx
 _asset-*/
-/*.md
-!README.md
-!CHANGELOG.md
-
-# tests ship with the repository; uncomment to keep them local only
-# tests/
+out/
+output/
+# small synthetic fixtures for the tests are allowed
+!tests/**/*.pdf

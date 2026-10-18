@@ -27,13 +27,13 @@ GPU가 없는 보통 노트북에서 돌아가고, 인터넷은 서지정보 조
 | 항목 | 비고 |
 |---|---|
 | Windows 10/11 | macOS, Linux에서도 되지만 Word *수식* 변환은 Windows + Microsoft Office에서만 됩니다(없으면 LaTeX 문자열로 대신 적음). |
-| Python 3.10 이상 | 명령 프롬프트에서 `python --version` 으로 확인. 없으면 [python.org](https://www.python.org/downloads/)에서 설치하고 "Add Python to PATH"에 체크. (uv가 있으면 uv가 Python을 대신 내려받습니다.) |
+| Python 3.10 ~ 3.12 | 명령 프롬프트에서 `python --version` 으로 확인. 없으면 [python.org](https://www.python.org/downloads/)에서 **3.12**를 설치하고 "Add Python to PATH"에 체크. **3.13 이상은 아직 안 됩니다** — 수식 OCR 패키지(`rapid_latex_ocr`)가 `numpy<2`를 요구하는데 numpy 1.x는 3.13용 배포 파일이 없어 설치가 실패합니다. (uv가 있으면 맞는 Python을 uv가 대신 내려받습니다.) |
 | uv (선택, 권장) | 설치가 훨씬 빠릅니다: `pip install uv` |
 
 **설치**
 
 1. 이 저장소를 `git clone` 하거나 ZIP으로 받아 적당한 폴더에 풉니다.
-2. **`main_gui.bat`** 를 더블클릭합니다. 처음에는 가상환경을 만들고 필요한 패키지를 자동으로 설치합니다(인터넷 필요, 몇 분). 끝나면 창이 뜹니다.
+2. **`main_gui.bat`** 를 더블클릭합니다. 처음에는 가상환경을 만들고 필요한 패키지를 자동으로 설치합니다(인터넷 필요, 몇 분). 끝나면 창이 뜹니다. 가상환경은 **Python 3.10~3.12**로만 만듭니다: uv가 있으면 그 범위의 Python을 고르거나 내려받고, 없으면 `py -3.12`, `-3.11`, `-3.10` 순으로 찾습니다. 이미 있는 가상환경의 Python이 범위 밖이면(예: 다른 PC에서 3.13으로 만든 것) 설치 도중 실패하는 대신 이유와 조치를 알려 주고 멈춥니다.
 3. 끝입니다. 첫 변환 때 수식 인식 모델(약 170 MB)을 한 번 내려받습니다.
 
 `main_gui.bat`가 쓰는 가상환경은 아래 순서로 먼저 찾은 것입니다.
@@ -47,7 +47,7 @@ GPU가 없는 보통 노트북에서 돌아가고, 인터넷은 서지정보 조
 
 `requirements.txt`가 바뀌거나 폴더를 옮기면 다음 실행 때 패키지를 자동으로 다시 맞춥니다.
 
-직접 설치하고 싶으면 이 폴더에서 명령 프롬프트(또는 PowerShell)를 열고:
+직접 설치하고 싶으면 이 폴더에서 명령 프롬프트(또는 PowerShell)를 열고 (`uv venv`는 폴더의 `.python-version`에 적힌 3.12를 씁니다):
 
 ```bash
 uv venv
@@ -57,10 +57,10 @@ uv venv
 uv pip install -e .
 ```
 
-uv가 없으면 대신:
+uv가 없으면 대신 (3.12 대신 3.11, 3.10도 됩니다):
 
 ```bash
-python -m venv .venv
+py -3.12 -m venv .venv
 ```
 
 ```bash
