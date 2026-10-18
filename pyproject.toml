@@ -8,8 +8,8 @@ dynamic = ["version"]
 description = "Turn PDF papers, books and manuals into Word documents or Obsidian notes: layout-aware text, equations as image + OCR (Word math / LaTeX), figures, front matter; big PDFs split by bookmark chapters."
 readme = "README.md"
 # 3.13+ is excluded: rapid_latex_ocr needs numpy < 2, which has no wheels for Python 3.13 or newer.
-# Keep in sync with main_gui.bat (PY_MIN / PY_MAX) and .python-version.
-requires-python = ">=3.10,<3.13"
+# Only 3.12: main_gui.bat creates and accepts 3.12 environments only (PY_MIN / PY_MAX / PY_TOP), see .python-version.
+requires-python = ">=3.12,<3.13"
 license = { text = "MIT" }
 keywords = ["pdf", "word", "docx", "obsidian", "markdown", "latex", "ocr", "paper", "book", "manual", "bookmarks", "chapters"]
 dependencies = [
