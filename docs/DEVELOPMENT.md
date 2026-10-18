@@ -10,7 +10,7 @@
 | 항목 | 비고 |
 |---|---|
 | Git | 저장소 `https://github.com/Perfectree-1215/PDF2Word.git` |
-| Python **3.10 ~ 3.12** | 3.13 이상은 설치가 실패합니다. 수식 OCR 패키지 `rapid_latex_ocr`가 `numpy<2`를 요구하는데 numpy 1.x에는 3.13용 wheel이 없기 때문입니다. 개발 환경(`uv sync`)과 `main_gui.bat`가 만드는 환경은 모두 **3.12**이고, PC에 3.12가 없으면 uv가 내려받습니다. |
+| Python **3.12** | `requires-python = ">=3.12,<3.13"`. 3.13 이상은 설치가 실패합니다. 수식 OCR 패키지 `rapid_latex_ocr`가 `numpy<2`를 요구하는데 numpy 1.x에는 3.13용 wheel이 없기 때문입니다. 개발 환경(`uv sync`)과 `main_gui.bat`가 만드는 환경은 모두 3.12이고, PC에 3.12가 없으면 uv가 내려받습니다. |
 | uv (권장) | `pip install uv`, `winget install astral-sh.uv` 또는 https://docs.astral.sh/uv/ . `main_gui.bat`는 uv가 없고 3.12도 없으면 공식 설치 스크립트로 uv를 설치합니다. |
 | Windows + Microsoft Office (선택) | Word **수식 개체** 변환에만 필요합니다(Office의 `MML2OMML.XSL`). 없으면 LaTeX 문자열로 들어갑니다. macOS/Linux에서도 나머지는 다 됩니다. |
 | Tesseract (선택) | 스캔 PDF `--ocr-pages` 에만 필요 |
@@ -42,8 +42,8 @@ uv sync --locked --extra dev
    읽어 빠진 패키지를 찾고, 이 파일이 바뀌면 다음 실행 때 패키지를 다시 맞춥니다.
 2. `uv lock` 을 돌려 `uv.lock`을 갱신하고 함께 커밋합니다.
 3. Python 지원 범위를 바꾸면 `pyproject.toml`의 `requires-python`, `.python-version`, `main_gui.bat`의
-   `PY_MIN / PY_MAX / PY_TOP` 세 곳을 같이 봅니다. 현재 패키지 자체(`requires-python`)는 3.10~3.12에서 돌지만,
-   `main_gui.bat`는 가상환경을 **3.12만** 만들고 받아들입니다(`PY_MIN=3.12`).
+   `PY_MIN / PY_MAX / PY_TOP` 세 곳을 같이 바꾸고 `uv lock`을 다시 돌립니다. 현재 세 곳 모두 **3.12만**
+   (`>=3.12,<3.13`, `3.12`, `PY_MIN=PY_TOP=3.12`)입니다.
 
 ## 3. 실행
 

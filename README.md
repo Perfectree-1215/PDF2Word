@@ -57,7 +57,7 @@ uv venv
 uv pip install -e .
 ```
 
-uv가 없으면 대신 (3.12 대신 3.11, 3.10도 됩니다):
+uv가 없으면 대신 (반드시 3.12):
 
 ```bash
 py -3.12 -m venv .venv

@@ -9,7 +9,9 @@ GUI와 결과물에는 `v1.0`처럼 앞 두 자리만 표시합니다.
   `uv venv --python 3.12`(설치된 3.12가 없으면 uv가 내려받음), uv가 없으면 `py -3.12`(또는 3.12인 `python`), 둘 다 없으면
   uv를 공식 설치 스크립트(astral.sh, 실패 시 winget)로 설치한 뒤 uv로 만듦. 그래서 3.13/3.14만 깔린 PC나 Python이 없는
   PC에서도 더블클릭 한 번으로 됨. 이유: PC의 기본 Python이 3.12가 아니면 환경 생성·패키지 설치가 실패하던 문제.
-  3.10/3.11로 새 환경을 만들던 대체 경로는 없앴고, 기존 가상환경도 3.12가 아니면(`PY_MIN=3.12`) 받아들이지 않고 안내 후 멈춤. uv는 PATH 외에
+  3.10/3.11로 새 환경을 만들던 대체 경로는 없앴고, 기존 가상환경도 3.12가 아니면(`PY_MIN=3.12`) 받아들이지 않고 안내 후 멈춤.
+  `pyproject.toml`의 `requires-python`도 `>=3.12,<3.13`으로 올리고 `uv lock`을 다시 돌림(3.10/3.11 전용 패키지
+  exceptiongroup·tomli 등이 lock에서 빠짐). uv는 PATH 외에
   `%USERPROFILE%\.local\bin`과 WinGet 폴더에서도 찾음. 사용자 uv 설정이 다운로드를 막아도 되도록 `UV_PYTHON_DOWNLOADS=automatic`
 - `main_gui.bat`: 가상환경을 만들 때 Python 3.10~3.12만 쓰도록 함. uv는 `>=3.10,<3.13`에 맞는 Python을 고르거나
   내려받고, uv가 없으면 `py -3.12`, `-3.11`, `-3.10` 순으로 찾은 뒤 `py -3`/`python`은 버전이 범위 안일 때만 씀.
