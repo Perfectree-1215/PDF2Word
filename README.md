@@ -122,7 +122,7 @@ papers\
 ## 4. 자주 묻는 질문
 
 **수식이 틀리게 읽혔어요.**
-OCR은 완벽하지 않습니다. 그래서 항상 원본 이미지를 수식 위에 같이 넣습니다. 이미지를 보고 Word에서 고치거나, `--math-engine claude`(API 키 필요)로 다시 변환해 보세요. 정도가 심하면 자동으로 `⚠ OCR 신뢰도 낮음 (34%)` 표시가 붙습니다.
+OCR은 완벽하지 않습니다. 그래서 항상 원본 이미지를 수식 위에 같이 넣습니다. 이미지를 보고 Word에서 고치거나, `--math-engine claude`(API 키 필요)로 다시 변환해 보세요. 정도가 심하면 자동으로 `⚠ OCR 신뢰도 낮음 (34%)` 표시가 붙습니다. 이 표시는 OCR 결과를 PDF의 텍스트 레이어와 대조해서 붙이는데, 텍스트 레이어가 깨진 PDF(구형 Elsevier 논문 등, 본문을 복사하면 `¼`·`ð`·`þ` 같은 글자가 나오는 것)에서는 대조할 기준이 없어 표시를 붙이지 않고 대신 로그와 Markdown 머리에 `equations_unverified` 건수를 적습니다. 이런 PDF는 수식을 이미지와 직접 대조하세요.
 
 **Word에 수식 대신 `\frac{…}` 같은 글자가 들어가요.**
 Microsoft Office가 없는 PC입니다. Word 수식은 Office에 포함된 변환 파일(`MML2OMML.XSL`)로 만들기 때문에, Office가 없으면 LaTeX 문자열로 대신 적습니다. Word 365에서는 그 글자를 선택해 `Alt + =` 로 수식으로 바꿀 수 있습니다.
@@ -254,7 +254,7 @@ print(r.docx_path, r.md_path, r.asset_dir, r.stats)
 
 ```bash
 uv sync --locked --extra dev          # 개발용 환경(.venv, Python 3.12, pytest 포함)
-.venv\Scripts\python -m pytest tests -q   # 순수 함수 테스트 24개 (모델·네트워크 불필요)
+.venv\Scripts\python -m pytest tests -q   # 순수 함수 테스트 37개 (모델·네트워크 불필요)
 pdf2word sample.pdf --pages 1-5 -v    # 실제 변환 확인
 ```
 

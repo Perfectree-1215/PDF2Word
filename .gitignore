@@ -60,3 +60,9 @@ out/
 output/
 # small synthetic fixtures for the tests are allowed
 !tests/**/*.pdf
+
+# equation OCR benchmarks (tools/bench_mathocr.py): one folder per PDF under bench/.
+# Only the hand-made golden set is kept; reports, results and crops are generated.
+bench/**
+!bench/*/
+!bench/*/golden.json

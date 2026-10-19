@@ -3,6 +3,26 @@
 버전은 `pdf2word/__init__.py`의 `__version__` 한 곳에서 관리합니다. 형식은 `MAJOR.MINOR.PATCH`이며
 GUI와 결과물에는 `v1.0`처럼 앞 두 자리만 표시합니다.
 
+## 미공개
+
+- 수식 OCR 검증 계층: 텍스트 레이어가 깨진 PDF(Type 1 사설 인코딩 — 구형 Elsevier 등, 본문을 복사하면 `¼`·`ð`·`þ`가 나오는 것)를
+  감지해(`mathocr.hint_usable`: 한 수식 영역에 `ð`/`þ`/`Þ`가 2개 이상) 그 영역은 텍스트 레이어가 없는 것처럼 다룸. 힌트 기반 보정과
+  신뢰도 대조를 건너뛰어 정답에 붙던 `⚠ OCR 신뢰도 낮음` 오경보를 없애고, 벡터 도형용 `doubtful_equation` 검사도 적용하지 않음.
+  대신 배율 2·3으로 읽어 정규화한 결과(`normalize_latex`)가 같으면 채택하고 다르면 4배까지 읽어 **배율 간 일치도**로 고르며
+  (`pick_by_agreement`), 그 일치도를 신뢰도로 써서 깨진 레이어에서도 근거 있는 `⚠`가 붙음.
+  건수는 로그 요약(`N unverified`)과 Markdown 머리 `equations_unverified`에 적고, `--math-mode latex`에서는 검증 못 한 식에
+  이미지를 함께 넣음. 이유: paper-01 벤치마크에서 불확실 표시 4건이 모두 깨진 레이어 때문인 오경보였음
+  (`docs/issues/garbled-text-layer.md`, `docs/decisions/equation-ocr-reliability.md`)
+- 식 번호: `ð3Þ`처럼 깨진 번호도 `(3)`으로 정규화해 찾음(`mathocr.label_text`). 2단 조판의 왼쪽 단 수식 번호가 탈락하던 기존
+  버그를 고침 — `find_labels`가 오른쪽 정렬을 페이지 끝까지의 탐색 띠가 아니라 수식 박스 기준으로 판정하고, 박스와 번호 사이에
+  다른 단의 글이 있으면 그 번호를 버림. 이제 2단 논문의 왼쪽 단 수식에도 `\tag`와 `^eq-N` 앵커가 붙음
+- `tools/bench_mathocr.py`: 한 PDF의 디스플레이 수식을 변환기와 같은 방법으로 찾아 엔진별 LaTeX·신뢰도·시간을 `report.md`/
+  `report.html`(MathJax)/`results.json`으로 비교(PDF마다 `bench/<stem>/` 한 폴더에 `golden.json`과 함께). `--golden`으로 사람이 확정한 정답 LaTeX(`bench/<stem>/golden.json`)와
+  정확 일치율·유사도를 냄(`normalize_latex`: 굵기·괄호 크기·간격은 무시, 악센트·첨자·기호는 유지). 첫 실행 때 같은 폴더에 `golden.json` 틀을 자동 생성, `--rescore`로 OCR 없이 재채점
+- 테스트 `tests/test_garbled_hint.py`, `tests/test_labels.py`(합성 2단 페이지), `tests/test_agreement.py`, `tests/test_bench.py` 추가(총 37개)
+- `.claude/`(스킬·에이전트·settings.json)와 CLAUDE.md "작업 라우팅": 단계별 모델 배정(방향 결정·진단 Fable, 구현 Opus,
+  배선·검증·문안 Sonnet). 인계물 틀 `docs/decisions/_template.md`, `docs/issues/_template.md`
+
 ## v1.4.0 — 2026-10-18
 
 설치 환경을 Python 3.12 하나로 고정해, PC에 어떤 Python이 깔려 있든(또는 없든) `main_gui.bat` 더블클릭 한 번으로 설치가

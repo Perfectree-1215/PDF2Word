@@ -63,7 +63,7 @@ uv sync --locked --extra dev
 ## 4. 테스트
 
 ```bash
-.venv\Scripts\python -m pytest tests -q      # 24개, 약 7초, 모델·네트워크 불필요
+.venv\Scripts\python -m pytest tests -q      # 37개, 약 7초, 모델·네트워크 불필요
 ```
 
 파일마다 `python tests/test_basic.py` 처럼 단독 실행도 됩니다.
@@ -74,6 +74,10 @@ uv sync --locked --extra dev
 | `tests/test_docx.py` | Word 출력(문단·수식·이미지 구조) |
 | `tests/test_outline.py` | 책갈피 트리, 챕터 쪽 범위, 인쇄 쪽 번호 |
 | `tests/test_vectormath.py` | 벡터 도형 수식 묶기와 분류 |
+| `tests/test_garbled_hint.py` | 깨진 텍스트 레이어 감지(`hint_usable`)·식 번호 정규화(`label_text`)·판단 유보 |
+| `tests/test_labels.py` | 합성 2단 페이지에서 식 번호 찾기(`find_labels`, 왼쪽 단·다른 단 번호 배제·깨진 번호) |
+| `tests/test_agreement.py` | 배율 간 일치도(`agreement`, `pick_by_agreement`)로 읽기 결과 고르기 |
+| `tests/test_bench.py` | `tools/bench_mathocr.py`의 LaTeX 정규화·골든 채점·요약 |
 
 테스트용 PDF는 저작권 때문에 저장소에 없습니다. 실제 변환 확인에는 종류가 다른 PDF 세 가지를 쓰는 것이 좋습니다.
 개발 PC에서 기준으로 삼은 것은 **pdfTeX 논문**(MDPI *Minerals* 12-00480, CM/PazoMath 글꼴), **InDesign 논문**
@@ -88,7 +92,8 @@ Theory Guide로 확인했습니다. 새 PC에서는 같은 종류의 PDF를 아�
 | `main_gui.py` / `main_gui.bat` | tkinter GUI와 실행 스크립트. 인수가 있으면 CLI로 넘김. bat는 **ASCII만, CRLF**(`.gitattributes`가 보장) |
 | `pdf2word/cli.py`, `config.py` | 옵션 정의(`Options` dataclass)와 명령줄. 새 옵션은 두 곳에 같이 넣고 README 옵션 표를 갱신 |
 | `pdf2word/converter.py` | 파이프라인. `pymupdf4llm.to_markdown(page_chunks=True)` 결과의 `page_boxes`를 `_DocContext.render_page`가 클래스별로 처리(formula/picture/caption/text…) |
-| `pdf2word/mathocr.py` | 수식 박스 렌더링 → 줄 분할 → RapidLaTeXOCR/Claude → 검증(괄호·반복·텍스트 대조), 캐시 |
+| `pdf2word/mathocr.py` | 수식 박스 렌더링 → 줄 분할 → RapidLaTeXOCR/Claude → 검증(괄호·반복·텍스트 대조), 캐시. 깨진 텍스트 레이어 감지(`hint_usable`, `label_text`), 식 번호 찾기(`find_labels`, 2단 조판은 `box=` 필수), 레이어가 깨진 식의 배율 간 일치도 선택(`_recognize_by_agreement`, `normalize_latex`) |
+| `tools/bench_mathocr.py` | 한 PDF의 디스플레이 수식을 변환기와 같은 방법으로 찾아 엔진별 결과를 `report.md`/`report.html`(MathJax)/`results.json`으로 비교. PDF마다 `bench/<stem>/` 한 폴더에 `report.html`·`results.json`·크롭·`golden.json`(사람이 확정한 정답 LaTeX)을 두고, 같은 폴더의 `golden.json`과 정확 일치율·유사도를 냄(없으면 첫 실행이 틀을 만들고, `--rescore`는 OCR 없이 재채점) |
 | `pdf2word/inlinemath.py` | 텍스트 레이어의 인라인 수식(ρ_f, u_i, Ψ_⊥, \vec{v}) → `$...$`. 임계값은 파일 상단 상수(`SMALL_RATIO`, `SHIFT_RATIO`, `GLUE_GAP`, `ACCENT_RAISE`) |
 | `pdf2word/vectormath.py` | 벡터 도형으로 그려진 수식·기호(매뉴얼) |
 | `pdf2word/outline.py` | 책갈피 트리, 챕터 쪽 범위, 부분 문서 만들기, 인쇄 쪽 번호 |

@@ -15,7 +15,8 @@ from .config import (CHAPTER_ASSET_TEMPLATE, CHAPTER_NAME_TEMPLATE, DOC_ASSET_TE
                      PAPER_ASSET_TEMPLATE, PAPER_NAME_TEMPLATE, Options)
 from .lighten import lighten_document
 from .inlinemath import inline_text_math
-from .mathocr import LABEL_RE, TEXT_FLAGS, EquationOCR, EquationResult, build_engine, find_labels, render, tight_crop
+from .mathocr import (LABEL_RE, TEXT_FLAGS, EquationOCR, EquationResult, build_engine, find_labels, hint_usable,
+                      label_text, render, tight_crop)
 from .metadata import PaperMeta, detect_doc_type, document_meta, resolve_metadata
 from .obsidian import block_id, build_frontmatter, ensure_title, image_link, postprocess
 from .outline import PageNumbers, Part, page_groups, parse_pages, part_document, read_outline, select_parts, split_children
@@ -326,8 +327,9 @@ class Converter:
         else:
             asset_dir_out = asset_dir
         stats["seconds"] = round(time.time() - t0, 1)
-        log.info("  -> %s  (%ss; equations %d ok / %d as image; inline text math %d; figures %d%s)",
+        log.info("  -> %s  (%ss; equations %d ok / %d as image%s; inline text math %d; figures %d%s)",
                  " + ".join(written), stats["seconds"], stats["eq_ok"], stats["eq_fallback"],
+                 f" / {stats['eq_unverified']} unverified (garbled text layer)" if stats["eq_unverified"] else "",
                  stats["inline_text_eqs"], stats["figures"],
                  f"; Word equations {stats['docx_eq_native']} native / {stats['docx_eq_text']} text"
                  if fmt != "md" else "")
@@ -593,22 +595,30 @@ class _DocContext:
     def _formula(self, page, box: dict, seg: str) -> str:
         rect = pymupdf.Rect(box["bbox"])
         inside = (page.get_text("text", clip=rect) or "").strip()
-        m = LABEL_RE.match(inside)
+        m = LABEL_RE.match(label_text(inside))
         if m and rect.width < 60:
             # only an equation number: the equation itself is drawn as graphics (handled per page)
             self._consumed_labels.append(m.group(1))
             return ""
-        # the number may sit outside the box, at the right margin
-        labels = find_labels(page, pymupdf.Rect(rect.x0, rect.y0 - 3, page.rect.x1, rect.y1 + 3))
+        # the number may sit outside the box, at the right margin (the strip reaches the page edge;
+        # `box` keeps find_labels from taking the other column's numbers on two-column pages)
+        labels = find_labels(page, pymupdf.Rect(rect.x0, rect.y0 - 3, page.rect.x1, rect.y1 + 3), box=rect)
         regions = self._split_regions(rect, labels)
         blocks = []
         for region, label in regions:
             hint = map_pua(page.get_text("text", clip=region) or "").strip()
+            unverified = bool(hint) and not hint_usable(hint)
+            if unverified:
+                # garbled Type 1 text layer (docs/issues/garbled-text-layer.md): the OCR compares its
+                # render scales with each other instead, and the output is formatted like an
+                # equation without a text layer
+                self.stats["eq_unverified"] += 1
             self.stats["eq_total"] += 1
             result = self.conv.ocr.recognize_region(page, region, hint)
             if result.cached:
                 self.stats["eq_cached"] += 1
-            blocks.append(self._format_equation(result, label, hint, page, region))
+            blocks.append(self._format_equation(result, label, "" if unverified else hint, page, region,
+                                                unverified=unverified))
         return "\n" + "\n".join(blocks) + "\n"
 
     @staticmethod
@@ -624,18 +634,22 @@ class _DocContext:
             regions.append((pymupdf.Rect(rect.x0, bounds[i], x1, bounds[i + 1]), label))
         return regions
 
-    def _format_equation(self, result: EquationResult, label: Optional[str], hint: str, page, region) -> str:
+    def _format_equation(self, result: EquationResult, label: Optional[str], hint: str, page, region,
+                         unverified: bool = False) -> str:
         opt = self.opt
         lines = []
-        if not hint and doubtful_equation(result.latex):
-            # no text layer to verify against (drawn / pictured equation) and the LaTeX looks garbled
+        if not hint and not unverified and doubtful_equation(result.latex):
+            # no text layer to verify against (drawn / pictured equation) and the LaTeX looks garbled.
+            # Not for a garbled *text* layer: that is an ordinary typeset equation, and the heuristic
+            # (tuned for vector-drawn glyph clusters) flags legitimate line breaks and spacing.
             result.confidence = min(result.confidence, 0.5)
         if result.latex and opt.math_mode != "image":
             body = result.latex
             if label:
                 body = body + f" \\tag{{{label}}}"
-            # the cropped original first, OCR result below it (always when the OCR looks doubtful)
-            if opt.math_mode == "both" or result.uncertain:
+            # the cropped original first, OCR result below it (always when the OCR looks doubtful or
+            # could not be checked against a text layer)
+            if opt.math_mode == "both" or result.uncertain or unverified:
                 fname = self._save_equation_image(result, label, page, region)
                 if fname:
                     lines.append(self._embed(fname))

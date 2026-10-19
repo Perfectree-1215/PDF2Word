@@ -105,10 +105,35 @@ def png_bytes(img: Image.Image) -> bytes:
     return buf.getvalue()
 
 
-def find_labels(page: pymupdf.Page, rect) -> list:
-    """Equation numbers '(3)' inside rect, right-aligned: [(label, Rect)] sorted top->bottom."""
+# Some PDFs (Type 1 fonts with private encodings; older Elsevier papers are the usual case) have
+# a text layer of Latin-1 look-alikes: '1/4' for '=', thorn for '+', eth / Thorn for the
+# parentheses, '@' for the partial sign and Latin letters for Greek ones. Such text cannot verify
+# or repair an OCR result, so it is treated like a missing text layer
+# (docs/issues/garbled-text-layer.md, docs/decisions/equation-ocr-reliability.md).
+_GARBLED_RE = re.compile("[\u00f0\u00fe\u00de]")        # eth, thorn, Thorn
+GARBLED_MIN = 2                                           # this many in one region = garbled
+
+
+def hint_usable(hint: str) -> bool:
+    """False when the text layer of a region is missing or garbled and must not be used."""
+    return bool(hint) and len(_GARBLED_RE.findall(hint)) < GARBLED_MIN
+
+
+def label_text(text: str) -> str:
+    """Normalise a garbled equation number 'eth 3 Thorn' to '(3)' before matching LABEL_RE."""
+    return text.replace("\u00f0", "(").replace("\u00de", ")")
+
+
+def find_labels(page: pymupdf.Page, rect, box=None) -> list:
+    """Equation numbers '(3)' inside rect, right-aligned: [(label, Rect)] sorted top->bottom.
+
+    `box` is the equation's own box when `rect` is a wider search strip (the converter searches
+    up to the page edge, which on a two-column page reaches into the other column): the
+    right-alignment test then uses the box, not the strip, and a number with other text between
+    the box and itself belongs to the other column and is skipped."""
     rect = pymupdf.Rect(rect)
-    labels = []
+    ref = pymupdf.Rect(box) if box is not None else rect
+    labels, lines = [], []
     try:
         blocks = page.get_text("dict", clip=rect, flags=TEXT_FLAGS)["blocks"]
     except Exception:
@@ -118,12 +143,16 @@ def find_labels(page: pymupdf.Page, rect) -> list:
             continue
         for line in block["lines"]:
             text = "".join(s["text"] for s in line["spans"])
-            m = LABEL_RE.match(text)
-            if not m:
-                continue
-            lb = pymupdf.Rect(line["bbox"])
-            if lb.x0 > rect.x0 + 0.45 * rect.width:
-                labels.append((m.group(1), lb))
+            lines.append((pymupdf.Rect(line["bbox"]), text, LABEL_RE.match(label_text(text))))
+    for lb, text, m in lines:
+        if not m or lb.x0 <= ref.x0 + 0.45 * ref.width:
+            continue
+        if box is not None and any(
+                ref.x1 < o.x0 < lb.x0 and ot.strip() and not om
+                and min(o.y1, lb.y1) - max(o.y0, lb.y0) > 0.5 * lb.height
+                for o, ot, om in lines):
+            continue                  # another column's text sits between the box and the number
+        labels.append((m.group(1), lb))
     labels.sort(key=lambda t: t[1].y0)
     return labels
 
@@ -211,7 +240,7 @@ def looks_garbage(s: str, max_len: int = 600) -> bool:
 
 def hint_fixes(latex: str, hint: str) -> str:
     """Use the PDF text layer of the region to repair typical OCR confusions."""
-    if not hint:
+    if not hint_usable(hint):
         return latex
     out = latex
     if "\u2202" in hint and r"\partial" not in out:            # ∂ -> \hat{C}, \tilde{\phi} ...
@@ -279,11 +308,67 @@ def hint_similarity(latex: str, hint: str) -> float:
     """How well the OCR result matches the PDF text layer of the same region (0..1).
 
     Compares the sequences of letters/digits/Greek names; 1.0 when the region has no usable
-    text layer (equations set as images), so image-only PDFs are never penalised."""
+    text layer (equations set as images, or a garbled text layer - see hint_usable), so such
+    PDFs are never penalised."""
+    if not hint_usable(hint):
+        return 1.0
     a, b = _hint_letters(hint), _latex_letters(latex)
     if len(a) < 3:
         return 1.0
     return difflib.SequenceMatcher(None, a, b).ratio()
+
+
+# ----------------------------------------------------------------------------- agreement between scales
+
+_STRIP_CMDS = re.compile(r"\\(?:left|right|[bB]igg?[lr]?|boldsymbol|mathbf|bm|mathrm|mathit|text|textrm|"
+                         r"operatorname|displaystyle|textstyle|scriptstyle|limits|nolimits)\b")
+_SPACE_CMDS = re.compile(r"\\[,;:! ]|\\quad|\\qquad|~|\\\\")
+_FUNC_CMDS = re.compile(r"\\(min|max|sin|cos|tan|log|ln|exp|det|lim)\b")
+# same glyph, different spelling (a person and an engine pick either)
+_SYNONYMS = {"\\widetilde": "\\tilde", "\\widehat": "\\hat", "\\overline": "\\bar",
+             "\\dfrac": "\\frac", "\\tfrac": "\\frac", "\\dots": "\\ldots", "\\cdots": "\\ldots"}
+_SYNONYM_RE = re.compile("|".join(re.escape(k) for k in _SYNONYMS) + r"(?![A-Za-z])")
+AGREE_OK = 1.0                # two render scales read the same thing (after normalize_latex): accept, stop
+
+
+def normalize_latex(s: str) -> str:
+    """Strip what two readings (or a person and an engine) legitimately write differently - bold,
+    bracket sizes, \\mathrm / \\text wrappers, spacing, environments, braces, whitespace, a trailing
+    comma - and keep what matters: symbols, accents (\\tilde vs \\bar), scripts, parentheses.
+    Used to compare results across render scales and against a golden set (tools/bench_mathocr.py)."""
+    s = re.sub(r"\\tag\*?\{[^}]*\}", "", s or "")
+    s = re.sub(r"\\(?:begin|end)\{[a-zA-Z*]+\}", "", s)
+    s = s.replace("\\{", "\\lbrace ").replace("\\}", "\\rbrace ")
+    s = _SPACE_CMDS.sub("", s)
+    s = _STRIP_CMDS.sub("", s)
+    s = _FUNC_CMDS.sub(r"\1", s)
+    s = _SYNONYM_RE.sub(lambda m: _SYNONYMS[m.group(0)], s)
+    s = s.replace("'", "\\prime")
+    s = re.sub(r"[{}\s&]", "", s)                       # braces, whitespace, alignment marks
+    return s.rstrip(",.;")
+
+
+def agreement(a: str, b: str) -> float:
+    """Similarity of two LaTeX strings after normalize_latex (0..1)."""
+    a, b = normalize_latex(a), normalize_latex(b)
+    if not a or not b:
+        return 0.0
+    return difflib.SequenceMatcher(None, a, b).ratio()
+
+
+def pick_by_agreement(latexes: list) -> tuple:
+    """(index of the reading to keep, confidence) for the readings of one equation at several
+    render scales. The reading that agrees best with another one wins; ties go to the later
+    (larger) scale. Confidence = that best pairwise agreement; 1.0 for a single reading, which
+    cannot be judged. Pure: used by the tests."""
+    if not latexes:
+        return -1, 0.0
+    if len(latexes) == 1:
+        return 0, 1.0
+    scores = [max(agreement(latexes[i], latexes[j]) for j in range(len(latexes)) if j != i)
+              for i in range(len(latexes))]
+    best = max(range(len(latexes)), key=lambda i: (scores[i], i))
+    return best, scores[best]
 
 
 # ----------------------------------------------------------------------------- cache
@@ -530,6 +615,13 @@ class EquationOCR:
         if self.engine is None:
             return EquationResult(None, base, 1, seconds=time.time() - t0)
 
+        if hint and not hint_usable(hint):
+            # garbled text layer (docs/issues/garbled-text-layer.md): it can neither verify the
+            # result nor choose the render scale, so the scales are compared with each other
+            if not self.engine.multiline:
+                return self._recognize_by_agreement(page, rect, base, t0)
+            hint = ""
+
         if self.engine.multiline:
             latex = self.recognize_image(base, hint)
             if latex is None and len(self.zooms) > 1:
@@ -554,6 +646,25 @@ class EquationOCR:
         if best_latex is None:
             return EquationResult(None, base, 0, seconds=time.time() - t0)
         return EquationResult(best_latex, base, best_lines, seconds=time.time() - t0, confidence=best_conf)
+
+    def _recognize_by_agreement(self, page: pymupdf.Page, rect: pymupdf.Rect, base, t0: float) -> EquationResult:
+        """A garbled text layer cannot pick the best render scale, so the scales are compared with
+        each other: read at the first two, stop when they agree (AGREE_OK), else read the rest and
+        keep the reading the others agree with most (pick_by_agreement). The agreement is the
+        confidence - a low one flags the equation like a poor text-layer match would."""
+        latexes, n_lines = [], []
+        for zoom in self.zooms:
+            latex, n = self._recognize_lines(page, rect, zoom, "")
+            if latex:
+                latexes.append(latex)
+                n_lines.append(n)
+            if len(latexes) >= 2 and agreement(latexes[-1], latexes[-2]) >= AGREE_OK:
+                break
+        if not latexes:
+            return EquationResult(None, base, 0, seconds=time.time() - t0)
+        i, conf = pick_by_agreement(latexes)
+        log.debug("  scales agree %.2f (%d reading(s))", conf, len(latexes))
+        return EquationResult(latexes[i], base, n_lines[i], seconds=time.time() - t0, confidence=conf)
 
     def _recognize_lines(self, page: pymupdf.Page, rect: pymupdf.Rect, zoom: float, hint: str):
         """Split the region into rows at `zoom`, OCR each (other scales as fallback per row)."""
