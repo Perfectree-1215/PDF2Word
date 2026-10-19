@@ -1,0 +1,8 @@
+{
+  "model": "claude-fable-5-1",
+  "effortLevel": "xhigh",
+  "env": {
+    "CLAUDE_CODE_SUBAGENT_MODEL": "claude-opus-5-5"
+  },
+  "fallbackModel": ["claude-opus-5-5", "claude-sonnet-5-5"]
+}
