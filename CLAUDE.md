@@ -60,8 +60,10 @@ OCR·검증·캐시) · `mfr_onnx.py`(Pix2Text MFR 모델 파일·onnxruntime �
 ### 등급 근거
 | 단계 | 모델 | 이유 |
 |---|---|---|
-| 팀장(메인 세션) | Fable 5.1 xhigh (`.claude/settings.json`) | 배차·대화·판단. `/model`로 직접 고른 것이며 플랜에 따라 구독 한도가 아닌 별도 크레딧으로 청구될 수 있다 |
-| ① ② | Fable 5.1 xhigh | 대조할 원본이 없고 틀리면 한참 뒤에 드러나며 되돌리기 어렵다(인터뷰 Q2) |
+| 팀장(메인 세션) | Fable 5.1 max (`.claude/settings.json`의 `CLAUDE_CODE_EFFORT_LEVEL`) | 배차·대화·판단. 프로젝트 설정이 모델을 고정하므로 `/model`로 바꿔도 다음 세션에 되돌아온다. 플랜에 따라 구독 한도가 아닌 별도 크레딧으로 청구될 수 있다 |
+| ① ② | Fable 5.1 max | 대조할 원본이 없고 틀리면 한참 뒤에 드러나며 되돌리기 어렵다(인터뷰 Q2) |
 | ③ | Opus 5.5 xhigh | 판단은 ②에서 끝났고 코드로 옮기는 일. 테스트로 즉시 검출된다 |
 | ④ ⑤ ⑥ | Sonnet 5.5 high | 기계적이고 원본·테스트와 대조 가능. 사용자가 GUI·샘플로 바로 확인한다(Q3) |
-| 이름 없는 서브에이전트(Explore 등) | Opus 5.5 (`CLAUDE_CODE_SUBAGENT_MODEL`) | 조사·탐색 기본값 |
+| 이름 없는 서브에이전트(Explore 등) | Opus 5.5 (general-purpose는 `CLAUDE_CODE_SUBAGENT_MODEL`, Explore는 메인이 Fable일 때 내장 규칙으로 Opus, Plan은 메인 모델 상속) | 조사·탐색 기본값 |
+
+`max`는 설정 파일의 `effortLevel` 키가 받지 않는 값이라 환경변수 `CLAUDE_CODE_EFFORT_LEVEL=max`로 건다. 이 환경변수는 스킬·에이전트 frontmatter의 `effort`보다 우선하므로, Opus xhigh·Sonnet high는 `modelSettings`의 모델별 `maxEffortLevel` 상한으로 지킨다(Claude Code 2.1.267 이상).
