@@ -1,6 +1,6 @@
 # pdf2word
 
-현재 버전 **v1.4.0** · 변경 내역은 [CHANGELOG.md](CHANGELOG.md)
+현재 버전 **v1.5.0** · 변경 내역은 [CHANGELOG.md](CHANGELOG.md)
 
 PDF를 **Word 문서(.docx)** 또는 **Obsidian 노트(.md)** 로 바꿔 주는 작은 도구입니다.
 논문이면 본문·그림·표는 물론 **수식까지** 옮기고, 제목·저자·DOI 같은 서지정보도 자동으로 채워 줍니다.

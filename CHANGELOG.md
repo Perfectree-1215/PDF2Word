@@ -3,7 +3,11 @@
 버전은 `pdf2word/__init__.py`의 `__version__` 한 곳에서 관리합니다. 형식은 `MAJOR.MINOR.PATCH`이며
 GUI와 결과물에는 `v1.0`처럼 앞 두 자리만 표시합니다.
 
-## 미공개
+## v1.5.0 — 2026-10-23
+
+수식 OCR 엔진을 Pix2Text MFR(`p2t`, CPU ONNX)로 바꾸고 기본값으로 삼았습니다. 깨진 텍스트 레이어의 식은 배율 간 일치도로 검증하고,
+2026-10-22 전체 코드 검토에서 확인된 발견 100여 건(챕터 분할 크래시·본문 손실, 자산 폴더 삭제, CrossMark 가짜 수식, Word·서지정보·GUI)을
+고쳤습니다. 수식 OCR 캐시 버전이 3으로 올라 첫 변환 때 모든 식을 다시 읽습니다. 테스트 63 → 222개.
 
 - 수식 OCR 엔진 `p2t` 추가, 기본값 변경: Pix2Text MFR 1.5(TrOCR 구조, 모델 3개 합계 120 MB)를 torch 없이 onnxruntime·tokenizers만으로
   돌리는 러너(`pdf2word/mfr_onnx.py`)와 `mathocr.Pix2TextEngine`. `--math-engine`의 기본값이 `rapid`에서 `p2t`로 바뀌고(GUI는 첫 항목
