@@ -81,9 +81,9 @@
      `https://hf-mirror.com/...`. 실패하면 `.part` 삭제 후 예외: URL·받을 폴더·수동 배치 방법을 한 문장에 담는다.
    - 러너: `onnxruntime` 세션 2개(CPU, 지연 로드), 전처리 RGB → 384×384 BICUBIC → float64로 1/255 → float32 →
      (x−0.5)/0.5 → CHW; 인코더 `pixel_values`→`last_hidden_state`; 디코더 입력 `input_ids`(int64)와
-     `encoder_hidden_states`뿐, 출력 `logits`. 탐욕 디코딩: 시작 1, 종료 2, 상한 `P2T_MAX_TOKENS = 640`
+     `encoder_hidden_states`뿐, 출력 `logits`. 탐욕 디코딩: 시작 1, 종료 2, 상한 `mfr_onnx.MAX_TOKENS = 640`
      (두 줄 식이 328 토큰; KV 캐시가 없어 길이의 제곱으로 느려지므로 1024는 쓰지 않음), 호출당 시간 예산 90 s, 짧은 주기
-     반복(토큰 24개 안에서 같은 구간 4회) 감지 시 중단. `tokenizers.Tokenizer.from_file`로 디코드(특수 토큰 제외).
+     반복(`mfr_onnx._repeating`: 끝부분이 짧은 주기로 되풀이됨) 감지 시 중단. `tokenizers.Tokenizer.from_file`로 디코드(특수 토큰 제외).
    - 후처리(Pix2Text `post_process` 상당, 엔진 안에서): 토큰 사이 공백 제거(명령 뒤 글자가 오는 곳만 한 칸 유지),
      맨 앞의 군더더기 `^{…}`/`_{…}` 제거, 빈 그룹(`{}`, `^{}`, `\hat{}` …) 반복 제거, 끝의 간격 명령 제거,
      짝 없는 `\left`/`\right` 제거, `\cfrac`→`\frac`, `\operatorname*`→`\operatorname`, `\sf`·`\tt`·`\it` 글꼴 전환 제거,
@@ -192,7 +192,7 @@
 - 텍스트 레이어가 멀쩡한 논문에서 `⚠` 표시나 `equations_unverified`가 rapid 때보다 늘면 배율 정책(4,3,2)과
   `AGREE_OK`를 재검토한다.
 - 모델 다운로드 실패 보고가 반복되면(HF 접근 불가 환경) 모델을 이 저장소의 GitHub Release 자산으로 미러링한다.
-- 식 하나에 90 s 예산이 자주 걸리면(로그에 "time budget" 3건 이상/논문) `P2T_MAX_TOKENS`를 낮추거나 줄 분할 모드를
+- 식 하나에 90 s 예산이 자주 걸리면(로그에 "time budget" 3건 이상/논문) `mfr_onnx.MAX_TOKENS`를 낮추거나 줄 분할 모드를
   p2t에도 붙인다.
 
 ## 관련
