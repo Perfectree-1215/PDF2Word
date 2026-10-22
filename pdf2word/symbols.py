@@ -66,8 +66,8 @@ def has_pua(text: str) -> bool:
     return bool(_PUA_RE.search(text or ""))
 
 
-# A few Unicode characters that MathJax/LaTeX would rather see as commands (used when a
-# PDF text snippet is embedded inside inline math by the fallback path).
+# A few Unicode characters that MathJax/LaTeX would rather see as commands
+# (inlinemath.char_to_latex and the hint letters of mathocr use it).
 UNICODE_TO_LATEX: dict[str, str] = {
     "\u2202": r"\partial ", "\u2207": r"\nabla ", "\u2211": r"\sum ", "\u220f": r"\prod ",
     "\u222b": r"\int ", "\u221e": r"\infty ", "\u2264": r"\le ", "\u2265": r"\ge ", "\u2260": r"\ne ",
@@ -95,7 +95,3 @@ UNICODE_TO_LATEX: dict[str, str] = {
     "\u00b7": r"\cdot ", "\u2223": r"\mid ", "\u2200": r"\forall ", "\u2203": r"\exists ",
     "\u2205": r"\emptyset ", "\u2026": r"\ldots ", "\u22ef": r"\cdots ", "\u2032": "'", "\u2033": "''",
 }
-
-
-def unicode_math_to_latex(text: str) -> str:
-    return "".join(UNICODE_TO_LATEX.get(ch, ch) for ch in text)

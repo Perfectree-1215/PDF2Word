@@ -7,9 +7,9 @@ MML2OMML.XSL stylesheet, when Office is installed) or as LaTeX text.
 from __future__ import annotations
 
 import re
-import sys
 from pathlib import Path
 from typing import Optional
+from urllib.parse import unquote
 
 from .utils import log, strip_emphasis
 
@@ -24,10 +24,9 @@ _OFFICE_XSL = [
     "/Applications/Microsoft Word.app/Contents/Resources/MML2OMML.XSL",
 ]
 _M_NS = "http://schemas.openxmlformats.org/officeDocument/2006/math"
-CAPTION_RE = re.compile(r"^(Fig(?:ure)?|Table|Scheme|Algorithm|Chart|Plate)\.?\s*[0-9]+[A-Za-z]?\b", re.I)
 _IMG_WIKI = re.compile(r"^!\[\[([^\]|]+)(?:\|[^\]]*)?\]\]\s*$")
 _IMG_MD = re.compile(r"^!\[[^\]]*\]\(([^)]+)\)\s*$")
-_BLOCK_ID = re.compile(r"\s*\^[A-Za-z0-9-]+\s*$")
+_BLOCK_ID = re.compile(r"\s+\^[A-Za-z0-9-]+\s*$")          # never the end of "2^31" or "m^2"
 _TOKEN = re.compile(
     r"(!\[\[[^\]]+\]\]|!\[[^\]]*\]\([^)]+\)"
     r"|\*\*\*.+?\*\*\*|\*\*.+?\*\*|(?<![A-Za-z0-9])_(?!\s)[^_<>|\n]+?_(?![A-Za-z0-9])|\*(?!\s)[^*<>|\n]+?\*"
@@ -70,19 +69,19 @@ class OmmlConverter:
         """Rewrite constructs latex2mathml does not know into ones it does."""
         s = re.sub(r"\\tag\*?\{[^}]*\}", "", latex)
         # \Bigl( ... \Bigr) -> \left( ... \right);  bare \Big( / \Big) -> plain delimiters
-        s = re.sub(r"\\[Bb]igg?l\s*(\\?[(\[|{])", r"\\left\1", s)
-        s = re.sub(r"\\[Bb]igg?r\s*(\\?[)\]|}])", r"\\right\1", s)
+        s = re.sub(r"\\[Bb]igg?l\s*(\\?[(\[|{]|\\(?:langle|lvert|lVert|vert|Vert|lfloor|lceil|lbrace|lbrack)"
+                   r"(?![A-Za-z])|\.)", r"\\left\1", s)
+        s = re.sub(r"\\[Bb]igg?r\s*(\\?[)\]|}]|\\(?:rangle|rvert|rVert|vert|Vert|rfloor|rceil|rbrace|rbrack)"
+                   r"(?![A-Za-z])|\.)", r"\\right\1", s)
         s = re.sub(r"\{\\[Bb]igg?\s*/\}", "/", s)
-        s = re.sub(r"\\[Bb]igg?m?\s*", "", s)
+        s = re.sub(r"\\[Bb]igg?[lrm]?(?![A-Za-z])\s*", "", s)      # not \bigcup, \bigoplus, ...
         s = s.replace(r"\begin{gathered}", r"\begin{matrix}").replace(r"\end{gathered}", r"\end{matrix}")
         s = s.replace(r"\begin{aligned}", r"\begin{matrix}").replace(r"\end{aligned}", r"\end{matrix}")
         s = re.sub(r"\\(?:displaystyle|textstyle|scriptstyle|nolimits|limits)\b", "", s)
-        s = re.sub(r"\\stackrel\{\\rightarrow\}\{([^{}]*)\}", r"\\vec{\1}", s)
-        s = re.sub(r"\\stackrel\{\\rightarrow\}(\\[a-zA-Z]+\{[^{}]*\}|\\?[A-Za-z0-9])", r"\\vec{\1}", s)
         s = re.sub(r"\\mathrm\{([^{}]*)\}", lambda m: "\\mathrm{" + m.group(1).replace(" ", "") + "}", s)
         s = s.replace("~", r"\;")
-        if s.count(r"\left") != s.count(r"\right"):
-            s = re.sub(r"\\(left|right)(?=[\s(\[|.{\\)\]])", "", s)
+        if len(re.findall(r"\\left(?![A-Za-z])", s)) != len(re.findall(r"\\right(?![A-Za-z])", s)):
+            s = re.sub(r"\\(?:left|right)(?:\s*\.|(?=[\s(\[|{\\)\]]))", "", s)
         return s.strip()
 
     def omml(self, latex: str, block: bool = True):
@@ -189,7 +188,6 @@ class DocxBuilder:
                     self._paragraph(text)
                 para.clear()
 
-        pending_eq_image: Optional[Path] = None
         while i < n:
             line = lines[i]
             stripped = line.strip()
@@ -219,19 +217,13 @@ class DocxBuilder:
                 continue
             if stripped == "$$":
                 flush()
-                i = self._equation(lines, i, pending_eq_image)
-                pending_eq_image = None
+                i = self._equation(lines, i)
                 continue
             img = _IMG_WIKI.match(stripped) or _IMG_MD.match(stripped)
             if img:
                 flush()
                 path = self._resolve(img.group(1))
-                # an equation image is followed by its $$ block: keep them together
-                nxt = next((ln.strip() for ln in lines[i + 1:i + 3] if ln.strip()), "")
-                if path and path.stem.startswith("eq-") and nxt == "$$":
-                    pending_eq_image = path
-                else:
-                    self._picture(path, equation=bool(path and path.stem.startswith("eq-")))
+                self._picture(path, equation=bool(path and path.stem.startswith("eq-")))
                 i += 1
                 continue
             if stripped.startswith("|"):
@@ -241,8 +233,12 @@ class DocxBuilder:
             m = re.match(r"^([-*+]|\d+[.)])\s+(.*)$", stripped)
             if m and not para:
                 flush()
-                style = "List Number" if m.group(1)[0].isdigit() else "List Bullet"
-                self._paragraph(m.group(2), style=style)
+                # a numbered line keeps the number printed in the PDF: Word's 'List Number' would
+                # renumber it with one counter running through the whole document
+                if m.group(1)[0].isdigit():
+                    self._paragraph(stripped)
+                else:
+                    self._paragraph(m.group(2), style="List Bullet")
                 i += 1
                 continue
             if stripped.startswith("---") and set(stripped) <= {"-", " "}:
@@ -256,7 +252,7 @@ class DocxBuilder:
         flush()
 
     def _same_title(self, text: str) -> bool:
-        norm = lambda s: re.sub(r"[^a-z0-9]+", "", s.lower())
+        norm = lambda s: re.sub(r"[\W_]+", "", s.casefold())     # any script: Hangul, Cyrillic, ...
         t = norm(self.meta.title or "")
         return bool(t) and (norm(text) == t or norm(text)[:40] == t[:40])
 
@@ -310,9 +306,12 @@ class DocxBuilder:
     # ---- images & equations --------------------------------------------------
     def _resolve(self, ref: str) -> Optional[Path]:
         ref = ref.strip().replace("\\", "/")
-        for cand in (self.base_dir / ref, self.base_dir.parent / ref, Path(ref)):
-            if cand.exists():
-                return cand
+        # --image-links markdown URL-quotes the path (obsidian.image_link); the spelling as written
+        # goes first so that a folder whose real name holds a '%' still resolves
+        for r in dict.fromkeys((ref, unquote(ref))):
+            for cand in (self.base_dir / r, self.base_dir.parent / r, Path(r)):
+                if cand.exists():
+                    return cand
         log.warning("  docx: image not found: %s", ref)
         return None
 
@@ -339,7 +338,7 @@ class DocxBuilder:
         except Exception as exc:
             log.warning("  docx: cannot embed %s (%s)", path.name, exc)
 
-    def _equation(self, lines: list, i: int, image: Optional[Path]) -> int:
+    def _equation(self, lines: list, i: int) -> int:
         i += 1
         body = []
         while i < len(lines) and lines[i].strip() != "$$":
@@ -352,8 +351,6 @@ class DocxBuilder:
         if m:
             label = m.group(1)
             latex = (latex[:m.start()] + latex[m.end():]).strip()
-        if image is not None:
-            self._picture(image, equation=True)
         self._equation_paragraph(latex, label)
         return i
 

@@ -2,12 +2,33 @@ from __future__ import annotations
 
 import argparse
 import glob
+import math
 import sys
 import time
 from pathlib import Path
 
 from .config import CHAPTER_NAME_TEMPLATE, Options
 from .utils import log, setup_console, setup_logging
+
+
+def _zooms(value: str):
+    """--math-zooms '4,3,2' -> (4.0, 3.0, 2.0); blank -> None (the engine's own order). A scale
+    of 0 rendered nothing (the remaining reading then passed as agreed), a negative one an
+    upside-down image."""
+    try:
+        zooms = tuple(float(z) for z in value.split(",") if z.strip())
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"comma-separated numbers expected, e.g. 4,3,2: {value!r}") from None
+    if not all(0 < z < math.inf for z in zooms):
+        raise argparse.ArgumentTypeError(f"every render scale must be a number > 0: {value!r}")
+    return zooms or None
+
+
+def _chapters(value: str) -> str:
+    """--chapters: a blank selection is refused here; it would have converted the whole PDF."""
+    if not value.strip():
+        raise argparse.ArgumentTypeError("no chapter id given (ids from --list-chapters, e.g. 3,4.2 or all)")
+    return value
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -43,7 +64,7 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--list-chapters", action="store_true",
                    help="print the bookmark tree (ids, page ranges) and convert nothing")
     g.add_argument("--chapter-depth", type=int, default=2, help="depth of the tree shown by --list-chapters")
-    g.add_argument("--chapters",
+    g.add_argument("--chapters", type=_chapters,
                    help="convert these bookmark entries, one file each; ids from --list-chapters, "
                         "e.g. '3,4.2,5.1-5.4'; 'all' = every top-level entry, 'all:2' = every entry of depth 2")
     g.add_argument("--chapter-split", choices=["exact", "page"], default="exact",
@@ -63,12 +84,13 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--offline", action="store_true", help="no CrossRef/arXiv lookup")
 
     g = p.add_argument_group("equations")
-    g.add_argument("--math-engine", choices=["rapid", "claude", "none"], default="rapid",
-                   help="rapid = local RapidLaTeXOCR (CPU); claude = Claude vision API; none = images only")
+    g.add_argument("--math-engine", choices=["p2t", "rapid", "claude", "none"], default="p2t",
+                   help="p2t = local Pix2Text MFR 1.5 (CPU, downloads 120 MB once; falls back to rapid); rapid = local RapidLaTeXOCR (CPU); claude = Claude vision API; none = images only")
     g.add_argument("--math-mode", choices=["both", "latex", "image"], default="both",
                    help="both = cropped equation image with the OCR result below it; "
                         "latex = OCR result only (image fallback); image = no OCR output")
-    g.add_argument("--math-zooms", default="2,3,4", help="render scales tried in order (rapid engine)")
+    g.add_argument("--math-zooms", type=_zooms, default=None,
+                   help="render scales tried in order; omit for the engine's own (p2t 4,3,2 / rapid 2,3,4)")
     g.add_argument("--math-max-tokens", type=int, default=320, help="decoder length cap (rapid engine)")
     g.add_argument("--no-inline-math", action="store_true", help="do not OCR small inline equation images")
     g.add_argument("--no-inline-text-math", action="store_true",
@@ -119,7 +141,6 @@ def expand_inputs(items) -> list:
 
 
 def options_from_args(args) -> Options:
-    zooms = tuple(float(z) for z in str(args.math_zooms).split(",") if z.strip())
     return Options(
         format=args.format, docx_math=args.docx_math,
         out_dir=args.out_dir, asset_template=args.asset_template, name_template=args.name_template,
@@ -131,7 +152,7 @@ def options_from_args(args) -> Options:
         online=not args.offline, author=args.author, year=args.year, title=args.title,
         pages=args.pages, dpi=args.dpi, keep_headers=args.keep_headers,
         keep_picture_text=args.keep_picture_text, ocr_pages=args.ocr_pages, lighten=not args.no_lighten,
-        math_engine=args.math_engine, math_zooms=zooms or (2.0, 3.0, 4.0),
+        math_engine=args.math_engine, math_zooms=args.math_zooms,
         math_max_tokens=args.math_max_tokens, math_mode=args.math_mode,
         inline_image_math=not args.no_inline_math, inline_text_math=not args.no_inline_text_math,
         vector_math=not args.no_vector_math, claude_model=args.claude_model,

@@ -1,4 +1,5 @@
-"""pdf2word - academic PDF -> Obsidian Markdown (LaTeX equations via OCR, figures as assets)."""
+"""pdf2word - PDF papers, books and manuals -> Word documents or Obsidian notes: layout-aware text, equations
+as image + OCR (Word math / LaTeX), figures, front matter; big PDFs split by bookmark chapters."""
 __version__ = "1.4.0"          # single source of truth (pyproject reads it); shown as v1.0 in the GUI
 
 

@@ -54,7 +54,7 @@ OPERATORS = frozenset("=+−-×·⋅∙/<>≤≥≠≈≡∝±∓∼≃→←↔
 _GREEK_CAPS_LOOKALIKE = dict(zip("ΑΒΕΖΗΙΚΜΝΟΡΤΧ", "ABEZHIKMNOPTX"))
 _GREEK_LOWER_LOOKALIKE = {"ο": "o"}
 
-_SCRIPT_RE = re.compile(r"^(?=.*[\w∞⊥∥′*+\-−])[\w,.;:()+\-−*/′'∞⊥∥∗∘·⋅ ]{1,%d}$" % MAX_SCRIPT_LEN)
+_SCRIPT_RE = re.compile(r"^(?=.*[\w∞⊥∥′*∗+\-−])[\w,.;:()+\-−*/′'∞⊥∥∗∘·⋅ ]{1,%d}$" % MAX_SCRIPT_LEN)
 _SHORT_SUP_RE = re.compile(r"^(?=.*\w)[\w′*−-]{1,2}$")       # body-size span flagged superscript
 #: glyphs that pdfTeX places above a letter for \vec, \bar, \hat, \tilde, \dot ...
 _ACCENT_GLYPHS = {"→": "vec", "⃗": "vec", "¯": "bar", "ˉ": "bar", "‾": "bar",
@@ -76,7 +76,9 @@ class Span:
 
     ``y0``/``y1`` are the top/bottom of the *MuPDF line* the span belongs to (as pymupdf4llm
     uses them), ``baseline`` is the y of the glyph origin.  ``kind`` is filled by
-    :func:`classify_spans`: ``text`` | ``space`` | ``var`` | ``sym`` | ``op`` | ``sub`` | ``sup``.
+    :func:`classify_spans`: ``text`` | ``space`` | ``var`` | ``sym`` | ``op`` | ``sub`` | ``sup`` |
+    ``accent``. An ``accent`` span decorates the span whose ``id()`` is in ``attach``;
+    :func:`_attach_accents` turns an accent glyph with no base into ``op`` or ``text``.
     """
     text: str
     font: str = ""
@@ -113,14 +115,14 @@ class Span:
 
 
 def normalize(text: str) -> str:
-    """map_pua + fold Mathematical Alphanumeric Symbols (𝑍 -> Z), ligatures and the micro sign.
+    """map_pua + fold Mathematical Alphanumeric Symbols (𝑍 -> Z) and the micro sign.
 
     (A blanket NFKC would also turn ϕ into φ and ϑ into θ, which changes the LaTeX command.)
     """
     out = []
     for ch in map_pua(text or ""):
         o = ord(ch)
-        if 0x1D400 <= o <= 0x1D7FF or ch in "ﬀﬁﬂﬃﬄ":
+        if 0x1D400 <= o <= 0x1D7FF:
             ch = unicodedata.normalize("NFKC", ch) or ch
         elif ch == "µ":            # micro sign -> mu
             ch = "μ"
@@ -466,8 +468,10 @@ def _script_text(spans: list[Span], texts: dict) -> str:
     return _smart_join(parts)
 
 
-_LEAD_OPS = re.compile(r"^[\s%s]+" % re.escape(_OP_CHARS))
-_TRAIL_OPS = re.compile(r"[\s%s]+$" % re.escape(_OP_CHARS))
+#: prefix operators (√ρ, ∑x, ∫f) belong to what follows them and postfix marks (ψ′, ψ″, ψ∗) to what
+#: precedes them: only the other operators are moved outside of $...$ at the edges of a run
+_LEAD_OPS = re.compile(r"^[\s%s]+" % re.escape("".join(sorted(OPERATORS - set("√∑∏∫")))))
+_TRAIL_OPS = re.compile(r"[\s%s]+$" % re.escape("".join(sorted(OPERATORS - set("′″∗")))))
 _OP_LATEX = frozenset(char_to_latex(c) for c in OPERATORS)
 
 
@@ -475,7 +479,8 @@ def run_to_latex(run: list[Span]) -> tuple[str, str, str]:
     """-> (latex, text to put before the formula, text to put after it).
 
     Operators at the very start/end of the run ("ψ=" set in one Symbol-font span) and trailing
-    punctuation ("P,") are moved outside of ``$...$``.
+    punctuation ("P,") are moved outside of ``$...$``. Prefix operators (√ ∑ ∏ ∫) at the start and
+    primes/star (′ ″ ∗) at the end stay inside: they belong to the letter.
     """
     atoms = [s for s in run if s.kind != "space"]
     if not atoms:
@@ -547,6 +552,43 @@ def run_to_latex(run: list[Span]) -> tuple[str, str, str]:
 # ----------------------------------------------------------------------------- locate & replace
 
 _GLUE = r"(?:[*_`\s]|<sup>|</sup>){0,8}"
+_MARK_RE = re.compile(r"[*_`]|</?sup>")
+
+
+def _marked(run: list[Span]) -> bool:
+    """True when pymupdf4llm writes a marker around some span of the run: superscript (<sup>),
+    italic (_), monospaced (`) or bold (**)."""
+    return any(s.flags & (1 | 2 | 8 | 16) for s in run if s.text.strip())
+
+
+def _in_open_group(seg: str, start: int, run: list[Span]) -> bool:
+    """True when `start` lies inside an emphasis group (or <sup>) that one of the run's own styles
+    opened earlier in `seg`: pymupdf4llm merged the run into a longer group ('_... u p ..._'),
+    so no marker touches the run itself."""
+    flags = 0
+    for s in run:
+        if s.text.strip():
+            flags |= s.flags
+    before = re.sub(r"\$[^$]*\$", "", seg[:start])
+    if flags & 1 and before.count("<sup>") > before.count("</sup>"):
+        return True
+    return any(flags & bit and before.count(mk) % 2 for bit, mk in ((2, "_"), (16, "**"), (8, "`")))
+
+
+def _unpaired_markers(matched: str, source: str) -> tuple[str, str]:
+    """(before, after): emphasis markers of the matched Markdown without a partner inside it.
+    They open or close a group that goes on outside the match ('_in situ u_ p') and are put back
+    outside the replacement, so the group stays closed."""
+    core = re.sub(r"</?sup>", "", matched)
+    before = after = ""
+    for mk in ("**", "_", "`"):
+        if (core.count(mk) - source.count(mk)) % 2:
+            if core.startswith(mk):
+                before += mk
+            else:
+                after = mk + after
+        core = core.replace(mk, "")
+    return before, after
 
 
 def _char_pattern(ch: str) -> str:
@@ -574,12 +616,28 @@ def run_pattern(run: list[Span]) -> re.Pattern:
     return re.compile(r"(?<![A-Za-z0-9\\])(?:[*_`]|<sup>)*" + body + r"(?:[*_`]|</sup>)*(?![A-Za-z0-9])")
 
 
-def _search_outside_math(pat: re.Pattern, text: str, pos: int):
+def _search_outside_math(pat: re.Pattern, text: str, pos: int, need_marker: bool = False):
+    """The first match at or after `pos` that is not inside $...$ (and, with `need_marker`, that
+    carries an emphasis marker or a <sup> tag), else None."""
     while True:
         m = pat.search(text, pos)
-        if m is None or text.count("$", 0, m.start()) % 2 == 0:
+        if m is None:
+            return None
+        if text.count("$", 0, m.start()) % 2 == 0 and (not need_marker or _MARK_RE.search(m.group(0))):
             return m
         pos = m.end()
+
+
+def _count_outside_math(pat: re.Pattern, text: str, pos: int, limit: int) -> int:
+    """How many matches outside $...$ from `pos` on, counting no further than `limit`."""
+    n = 0
+    while n <= limit:
+        m = _search_outside_math(pat, text, pos)
+        if m is None:
+            break
+        n += 1
+        pos = m.end()
+    return n
 
 
 def replace_runs(seg: str, runs: list[list[Span]]) -> tuple[str, list[tuple[str, str]], list[str]]:
@@ -587,21 +645,41 @@ def replace_runs(seg: str, runs: list[list[Span]]) -> tuple[str, list[tuple[str,
 
     -> (new text, [(matched markdown, replacement)], [runs not found]).  Runs are searched in
     reading order starting after the previous replacement; an unlocated run is skipped.
+
+    A prose word can spell a run ('move up as' and the run u_p): a run that pymupdf4llm marks
+    (italic, bold, mono, superscript) is located where the Markdown has a marker, or else inside
+    a longer group of its own style ('_... u p ..._'). An all-ASCII run located without a marker
+    is placed only when the stretches that spell it from here on are no more than the runs of
+    that text still to place. Markers of a group that the match cuts through are put back
+    outside ``$...$``.
     """
     found: list[tuple[str, str]] = []
     missed: list[str] = []
     pos = 0
-    for run in runs:
+    pats = [run_pattern(run) for run in runs]
+    marked = [_marked(run) for run in runs]
+    for k, run in enumerate(runs):
         source = " ".join(s.text.strip() for s in run if s.text.strip())
         latex, lead, trail = run_to_latex(run)
         if not latex:
             missed.append(source)
             continue
-        m = _search_outside_math(run_pattern(run), seg, pos)
+        pat, need = pats[k], marked[k]
+        m = _search_outside_math(pat, seg, pos, need)
+        loose = not need
+        if m is None and need:                 # inside a longer _..._ group no marker touches the run
+            m, loose = _search_outside_math(pat, seg, pos), True
+            if m is not None and not _in_open_group(seg, m.start(), run):
+                m = None
+        if m is not None and loose and source.isascii():
+            left = sum(1 for p, mk in zip(pats[k:], marked[k:]) if mk == need and p.pattern == pat.pattern)
+            if _count_outside_math(pat, seg, pos, left) > left:
+                m = None                       # more look-alikes than runs: cannot tell which is the run
         if m is None or m.group(0).count("<sup>") != m.group(0).count("</sup>"):
             missed.append(source)              # not found, or would tear a <sup>...</sup> pair apart
             continue
-        repl = f"{lead}${latex}${trail}"
+        before, after = _unpaired_markers(m.group(0), source)
+        repl = f"{before}{lead}${latex}${trail}{after}"
         tail = seg[m.end():]
         mm = re.match(r"[ \t]+(?=[,.;:)])", tail)    # "_h_ i , is" -> "$h_i$, is"
         if mm:

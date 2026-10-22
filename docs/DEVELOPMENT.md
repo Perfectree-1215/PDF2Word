@@ -58,12 +58,12 @@ uv sync --locked --extra dev
 - 결과는 저장소 밖이나 `out/` 폴더(.gitignore에 있음)에 쓰세요. 변환된 `.md`는 루트에 두면 커밋 대상이 됩니다.
 - 수식 OCR 결과는 `%LOCALAPPDATA%\pdf2word\mathocr-cache.json`에 캐시되어 같은 PDF를 다시 돌리면 빠릅니다. 엔진이나 전처리를
   바꿔 결과를 새로 보고 싶으면 `--no-cache`. GUI 설정(`gui.json`)도 같은 폴더에 있습니다.
-- 첫 변환 때 RapidLaTeXOCR 모델(약 170 MB)을 내려받습니다. PyMuPDF Layout 모델은 패키지에 들어 있습니다.
+- 첫 변환 때 수식 OCR 모델을 내려받습니다: `p2t`(기본)는 Pix2Text MFR 1.5(약 120 MB, `%LOCALAPPDATA%\pdf2word\models\pix2text-mfr-1.5`, `PDF2WORD_MODELS`로 변경), 폴백 `rapid`는 RapidLaTeXOCR 모델(약 170 MB). PyMuPDF Layout 모델은 패키지에 들어 있습니다.
 
 ## 4. 테스트
 
 ```bash
-.venv\Scripts\python -m pytest tests -q      # 24개, 약 7초, 모델·네트워크 불필요
+.venv\Scripts\python -m pytest tests -q      # 222개, 약 8초, 모델·네트워크 불필요
 ```
 
 파일마다 `python tests/test_basic.py` 처럼 단독 실행도 됩니다.
@@ -74,6 +74,21 @@ uv sync --locked --extra dev
 | `tests/test_docx.py` | Word 출력(문단·수식·이미지 구조) |
 | `tests/test_outline.py` | 책갈피 트리, 챕터 쪽 범위, 인쇄 쪽 번호 |
 | `tests/test_vectormath.py` | 벡터 도형 수식 묶기와 분류 |
+| `tests/test_garbled_hint.py` | 깨진 텍스트 레이어 감지(`hint_usable`)·식 번호 정규화(`label_text`)·판단 유보 |
+| `tests/test_labels.py` | 합성 2단 페이지에서 식 번호 찾기(`find_labels`, 왼쪽 단·다른 단 번호 배제·깨진 번호) |
+| `tests/test_agreement.py` | 배율 간 일치도(`agreement`, `pick_by_agreement`)로 읽기 결과 고르기 |
+| `tests/test_bench.py` | `tools/bench_mathocr.py`의 LaTeX 정규화·골든 채점·요약 |
+| `tests/test_mfr_onnx.py` | Pix2Text MFR 러너(가짜 세션·토크나이저·다운로더): 탐욕 루프·상한·반복 중단·후처리·모델 폴더·해시 검증 |
+| `tests/test_p2t_engine.py` | p2t 엔진의 배치: 모델 로드 실패 → rapid 폴백, 엔진별 기본 배율, 전체 영역 읽기(스텁 엔진) |
+| `tests/test_assets.py` | 자산 폴더 소유(`_own_asset_dir`): docx 변환이 같은 이름 폴더의 .md 그림을 건드리지 않음, 같은 저자·연도 논문은 `-2` 폴더, `[ ] #`가 든 PDF 이름 |
+| `tests/test_chapters.py` | 챕터 분할 경계: 책갈피 없는 PDF, 글줄을 지나는 자르기, 같은 쪽 위쪽 항목, 회전 쪽, 쪽 아래 목적지, 합자 제목, 한글 파일명(NFC), 빈 선택 오류, 대문자 쪽 라벨, 목적지 없는 책갈피 |
+| `tests/test_cli.py` | 파서가 미리 거절하는 값(`--math-zooms` 형식, 빈 `--chapters`; 종료 코드 2) |
+| `tests/test_gui.py` | 창 없는 GUI 로직: `split_extra`, `load_settings`(v1.3 설정의 rapid → p2t 한 번), `plan_for`/`parts_for`, `run_jobs`(파트별 변환·오류 중단·`--list-chapters` 거절), 상태 문구 |
+| `tests/test_inlinemath.py` | 인라인 수식 run을 Markdown에 놓을 때 주변 글 보존(산문 단어, 강조 묶음, `∗` 위첨자) |
+| `tests/test_lighten.py` | 경량화 사본의 그림 묶기, `cluster_rects` sweep = 쌍별 비교, redaction 상수 |
+| `tests/test_metadata.py` | 1쪽 휴리스틱(합성 PDF)과 CrossRef/arXiv(가짜 HTTP): 공백 span, 키워드, 마스트헤드, 연도, DOI, 복합 성, `&` 저자 |
+| `tests/test_obsidian.py` | Markdown 후처리(`_block_mask`, Abstract 콜아웃, 각주, 제목, 표). 모든 경우 원문 글자가 사라지지 않음을 단언 |
+| `tests/test_utils.py` | `wiki_safe_name`, 캐시 폴더(옛 pdf2obsidian 폴더 무시) |
 
 테스트용 PDF는 저작권 때문에 저장소에 없습니다. 실제 변환 확인에는 종류가 다른 PDF 세 가지를 쓰는 것이 좋습니다.
 개발 PC에서 기준으로 삼은 것은 **pdfTeX 논문**(MDPI *Minerals* 12-00480, CM/PazoMath 글꼴), **InDesign 논문**
@@ -85,26 +100,28 @@ Theory Guide로 확인했습니다. 새 PC에서는 같은 종류의 PDF를 아�
 
 | 모듈 | 역할 |
 |---|---|
-| `main_gui.py` / `main_gui.bat` | tkinter GUI와 실행 스크립트. 인수가 있으면 CLI로 넘김. bat는 **ASCII만, CRLF**(`.gitattributes`가 보장) |
+| `main_gui.py` / `main_gui.bat` | tkinter GUI와 실행 스크립트. 인수가 있으면 CLI로 넘김. 창 없이 테스트되는 함수: `run_jobs`(작업 스레드 본체, 오류·SystemExit를 큐로), `parts_for`·`plan_for`(챕터·쪽 분할 계획, cli `plan_parts`와 같음), `split_extra`(추가 옵션 칸, 큰따옴표만), `load_settings`(gui.json `"v": 2`). bat는 **ASCII만, CRLF**(`.gitattributes`가 보장) |
 | `pdf2word/cli.py`, `config.py` | 옵션 정의(`Options` dataclass)와 명령줄. 새 옵션은 두 곳에 같이 넣고 README 옵션 표를 갱신 |
-| `pdf2word/converter.py` | 파이프라인. `pymupdf4llm.to_markdown(page_chunks=True)` 결과의 `page_boxes`를 `_DocContext.render_page`가 클래스별로 처리(formula/picture/caption/text…) |
-| `pdf2word/mathocr.py` | 수식 박스 렌더링 → 줄 분할 → RapidLaTeXOCR/Claude → 검증(괄호·반복·텍스트 대조), 캐시 |
+| `pdf2word/converter.py` | 파이프라인. `pymupdf4llm.to_markdown(page_chunks=True)` 결과의 `page_boxes`를 `_DocContext.render_page`가 클래스별로 처리(formula/picture/caption/text…). 자산 폴더는 `_own_asset_dir`(md: 없음·빈 폴더·이번 .md가 참조하는 첫 이름, 아니면 `-2`·`-3`…; docx는 임시 폴더에서 만들고 지움) |
+| `pdf2word/mathocr.py` | 수식 박스 렌더링 → 줄 분할 → `p2t`(Pix2Text MFR, 기본; 모델을 못 쓰면 rapid로 대체)/RapidLaTeXOCR/Claude → 검증(괄호·반복·텍스트 대조), 캐시. 깨진 텍스트 레이어 감지(`hint_usable`, `label_text`), 식 번호 찾기(`find_labels`, 2단 조판은 `box=` 필수), 레이어가 깨진 식의 배율 간 일치도 선택(`_recognize_by_agreement`, `normalize_latex`). 저장 crop은 `EquationOCR.DISPLAY_ZOOM`(2 = 144 dpi, 엔진이 읽는 배율과 별개), `recognize_region(read=False)`는 OCR 없이 crop만(`--math-mode image`). 캐시에는 보정(`fix_braces`·`looks_garbage`·`hint_fixes`) 뒤 결과가 들어가므로 그 규칙을 바꾸면 `OCRCache.VERSION`(현재 3)을 올림 |
+| `pdf2word/mfr_onnx.py` | Pix2Text MFR 1.5 모델 파일 관리(내려받기·크기/sha256 검사·`PDF2WORD_MODELS`)와 onnxruntime 탐욕 디코딩 러너(torch 없음), 출력 후처리 |
+| `tools/bench_mathocr.py` | 한 PDF의 디스플레이 수식을 변환기와 같은 방법으로 찾아 `--engines`(기본 `p2t`) 엔진별 결과를 `report.md`/`report.html`(MathJax)/`results.json`으로 비교. PDF마다 `bench/<stem>/` 한 폴더에 `report.html`·`results.json`·크롭·`golden.json`(사람이 확정한 정답 LaTeX)을 두고, 같은 폴더의 `golden.json`과 정확 일치율·유사도를 냄(없으면 첫 실행이 틀을 만들고, `--rescore`는 OCR 없이 재채점). 골든 키는 (쪽, 라벨, `k`)이고 `k`는 같은 쪽·같은 라벨 안의 순번(번호 없는 식이 한 쪽에 여럿일 때), 옛 golden.json처럼 없으면 0 |
 | `pdf2word/inlinemath.py` | 텍스트 레이어의 인라인 수식(ρ_f, u_i, Ψ_⊥, \vec{v}) → `$...$`. 임계값은 파일 상단 상수(`SMALL_RATIO`, `SHIFT_RATIO`, `GLUE_GAP`, `ACCENT_RAISE`) |
-| `pdf2word/vectormath.py` | 벡터 도형으로 그려진 수식·기호(매뉴얼) |
-| `pdf2word/outline.py` | 책갈피 트리, 챕터 쪽 범위, 부분 문서 만들기, 인쇄 쪽 번호 |
+| `pdf2word/vectormath.py` | 벡터 도형으로 그려진 수식·기호(매뉴얼). 웹 링크 아래의 묶음은 배지로 보고 뺌(`_uri_links`, `LINK_BADGE_RATIO`; Elsevier CrossMark), OCR 결과가 글자 단어면 수식이 아님(`reads_as_text`) |
+| `pdf2word/outline.py` | 책갈피 트리, 챕터 쪽 범위, 부분 문서 만들기, 인쇄 쪽 번호. 경계가 글줄을 지나면 `_snap_cut`이 그 줄 가장자리로 옮김(`_lost`로 양쪽 손실 비교). `parse_pages`·`select_parts`는 고른 것이 없으면 ValueError |
 | `pdf2word/lighten.py` | 이미지가 많은 쪽의 분석용 사본(레이아웃 분석 속도) |
 | `pdf2word/docx_out.py` | Markdown → Word(.docx), LaTeX → MathML → OMML |
-| `pdf2word/obsidian.py` | frontmatter, 콜아웃, `$$` 정리, 각주 인용 |
+| `pdf2word/obsidian.py` | frontmatter, 콜아웃, `$$` 정리, 각주 인용. 줄 단위 정리는 `_block_mask`로 짝 맞는 `$$`·코드 펜스 블록을 건너뜀 |
 | `pdf2word/metadata.py` | DOI/arXiv 검출, CrossRef/arXiv 조회, 1쪽 휴리스틱 |
 | `pdf2word/symbols.py` | Symbol 폰트 PUA 복구, Unicode → LaTeX 표 |
-| `pdf2word/utils.py` | 로깅, 파일명, 캐시 폴더 |
+| `pdf2word/utils.py` | 로깅, 파일명(`fold_ascii`는 결합 악센트만 지우고 NFC), 자산 폴더 이름 `wiki_safe_name`(위키링크를 깨는 `[ ] # ^ \|` → `-`), 캐시 폴더 |
 
 흐름을 바꿀 때 기억할 점:
 
 - pymupdf4llm은 flags가 같으면 글자 크기를 무시하고 span을 합칩니다(`u`+작은 `i` → `_ui_`). 그래서 `inlinemath`는
   Markdown이 아니라 `page.get_text("rawdict")`의 원본 span에서 run을 찾고 Markdown에서는 강조 기호를 무시하는
   정규식으로 자리를 찾습니다. 못 찾으면 본문을 그대로 둡니다.
-- 수식·그림은 항상 **원본 PDF**에서 렌더링합니다. `lighten`으로 만든 사본은 레이아웃 분석에만 씁니다.
+- 수식·그림은 항상 **원본 PDF**에서 렌더링합니다. `lighten`으로 만든 사본은 레이아웃 분석에만 씁니다(`Converter._layout_doc`; `--ocr-pages`거나 `--no-lighten`이면 레이아웃도 원본으로).
 - 파일 읽고 쓸 때 `encoding="utf-8"`을 항상 명시합니다. Windows 콘솔은 cp949라서 생략하면 깨집니다.
   `utils.setup_console()`이 stdout/stderr를 UTF-8로 바꿉니다.
 - 큰 PDF 변환은 수 분 걸립니다. 자동화 스크립트에서는 백그라운드로 돌리고 `-v` 로그 파일을 보세요.

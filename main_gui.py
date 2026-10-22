@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import queue
+import shlex
 import sys
 import threading
 import traceback
@@ -35,9 +36,12 @@ def app_version() -> str:
         return ""
 
 FORMATS = [("📝 Word (.docx)", "docx"), ("🔗 Obsidian Markdown", "md"), ("둘 다", "both")]
-ENGINES = [("rapid  (로컬, 무료)", "rapid"), ("claude  (API, 정확)", "claude"), ("none  (OCR 없이 이미지만)", "none")]
+ENGINES = [("p2t  (로컬, 무료, 추천)", "p2t"), ("rapid  (로컬, 무료, 폴백)", "rapid"), ("claude  (API, 정확)", "claude"), ("none  (OCR 없이 이미지만)", "none")]
 MATH_MODES = [("이미지 + OCR 결과", "both"), ("OCR 결과만", "latex"), ("이미지만", "image")]
 DOC_TYPES = [("자동 판별", "auto"), ("논문", "paper"), ("일반 문서 (책·매뉴얼·보고서)", "document")]
+SETTINGS_VERSION = 2       # gui.json "v"; files without it are v1.3, which saved "engine": "rapid" on every run
+MODEL_DOWNLOAD = {"p2t": "약 120 MB", "rapid": "약 170 MB"}     # first-run model download per engine
+LIST_CHAPTERS_HINT = "--list-chapters는 GUI에서 쓰지 않습니다. 📑 챕터 선택… 버튼으로 책갈피 트리를 보세요."
 
 
 # ----------------------------------------------------------------------------- command line
@@ -56,6 +60,83 @@ def _settings_path() -> Path:
         return cache_dir() / SETTINGS_NAME
     except Exception:
         return HERE / SETTINGS_NAME
+
+
+def settings_engine(data: dict) -> str:
+    """The engine saved in gui.json. Files older than SETTINGS_VERSION 2 hold "rapid" whether or
+    not the user chose it (the old default, saved on every start and close), so that value moves
+    to p2t once; files written since keep the user's choice."""
+    engine = data.get("engine", "p2t")
+    version = data.get("v", 1)
+    if (version if isinstance(version, int) else 1) < 2 and engine == "rapid":
+        return "p2t"
+    return engine
+
+
+def load_settings() -> dict:
+    """gui.json as a dict ({} when missing or unreadable), engine migrated by settings_engine."""
+    try:
+        data = json.loads(_settings_path().read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    data["engine"] = settings_engine(data)
+    return data
+
+
+def save_settings(data: dict) -> None:
+    try:
+        _settings_path().write_text(json.dumps({"v": SETTINGS_VERSION, **data}, ensure_ascii=False, indent=2),
+                                    encoding="utf-8")
+    except Exception:
+        pass
+
+
+def split_extra(text: str) -> list:
+    """The 추가 옵션 box -> argv tokens. Double quotes group words and are dropped
+    (--title "My Report", -o "D:\\My Vault"); backslashes stay as typed (Windows paths), and a
+    single quote or # is an ordinary character (O'Brien). ValueError on an unclosed quote."""
+    lex = shlex.shlex(text, posix=True)
+    lex.whitespace_split = True
+    lex.commenters = ""
+    lex.escape = ""
+    lex.quotes = '"'
+    return list(lex)
+
+
+def refused_in_gui(args) -> str:
+    """Why the GUI does not run these command-line options ('' = it does)."""
+    return LIST_CHAPTERS_HINT if getattr(args, "list_chapters", False) else ""
+
+
+def status_text(engine: str) -> str:
+    """Status line while converting, naming the model the engine downloads on its first run."""
+    size = MODEL_DOWNLOAD.get(engine)
+    return "변환 중 …" + (f" (첫 실행은 수식 OCR 모델 {size}를 내려받습니다)" if size else "")
+
+
+def parts_for(pdf: str, sel: dict) -> list:
+    """The chapter picker's choice for one PDF -> parts (bookmark entries or page groups)."""
+    import pymupdf
+    from pdf2word.outline import page_groups, read_outline, select_parts, split_children
+    doc = pymupdf.open(pdf)
+    try:
+        if sel.get("kind") == "pages":
+            return page_groups(doc.page_count, int(sel.get("size", 50)))
+        parts = select_parts(read_outline(doc), ",".join(sel.get("ids", [])))
+        if sel.get("split"):
+            parts = [p for root in parts for p in split_children(doc, root)]
+        return parts
+    finally:
+        doc.close()
+
+
+def plan_for(conv, pdf: str, sel: dict | None) -> list:
+    """Parts to convert one file each: the picker's choice for this PDF, else --chapters /
+    --split-pages / --subchapters typed in 추가 옵션 (as the command line does); [] = the whole
+    PDF (or the --pages range) as one file."""
+    return parts_for(pdf, sel) if sel else conv.plan_parts(pdf)
 
 
 class _QueueLogHandler(logging.Handler):
@@ -93,6 +174,64 @@ class _StreamToQueue:
         return False
 
 
+def run_jobs(q: "queue.Queue", stop_flag: threading.Event, files: list, options, verbose: bool = False,
+             selections: dict | None = None) -> tuple:
+    """The worker thread: converts every file (split into parts as plan_for says), posting
+    ("log" | "error" | "result", ...) and last ("finished", (ok, failed)), counted per output
+    file as the command line counts them. Returns (ok, failed)."""
+    selections = selections or {}
+    logger = logging.getLogger("pdf2word")
+    handler = _QueueLogHandler(q)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    old_level = logger.level
+    logger.setLevel(logging.DEBUG if verbose else logging.INFO)
+    logger.addHandler(handler)
+    old_out, old_err = sys.stdout, sys.stderr
+    sys.stdout = sys.stderr = _StreamToQueue(q)
+    ok = failed = 0
+    try:
+        from pdf2word.converter import Converter
+        conv = Converter(options)
+        for i, pdf in enumerate(files):
+            if stop_flag.is_set():
+                q.put(("log", "중지했습니다."))
+                break
+            try:
+                parts = plan_for(conv, pdf, selections.get(pdf))
+                if parts:
+                    for result in conv.convert_parts(pdf, parts, stop=stop_flag.is_set):
+                        if result.error:
+                            failed += 1
+                            title = result.part.title if result.part else "?"
+                            q.put(("error", f"실패: {Path(pdf).name} [{title}]: {result.error}"))
+                        else:
+                            ok += 1
+                            q.put(("result", result))
+                else:
+                    result = conv.convert(pdf)
+                    ok += 1
+                    q.put(("result", result))
+            except (Exception, SystemExit) as exc:      # SystemExit: e.g. the claude engine without its SDK
+                failed += 1
+                q.put(("error", f"실패: {Path(pdf).name}: {exc}"))
+                if verbose:
+                    q.put(("log", traceback.format_exc()))
+                if isinstance(exc, SystemExit):         # the engine fails the same way for every file
+                    rest = len(files) - i - 1
+                    if rest:
+                        q.put(("log", f"같은 이유로 남은 파일 {rest}개는 변환하지 않습니다."))
+                    break
+    except (Exception, SystemExit) as exc:
+        q.put(("error", f"오류: {exc}"))
+        q.put(("log", traceback.format_exc()))
+    finally:
+        sys.stdout, sys.stderr = old_out, old_err
+        logger.removeHandler(handler)
+        logger.setLevel(old_level)
+        q.put(("finished", (ok, failed)))
+    return ok, failed
+
+
 # ----------------------------------------------------------------------------- GUI
 
 def launch_gui() -> int:
@@ -121,7 +260,7 @@ def launch_gui() -> int:
     class ChapterPicker(tk.Toplevel):
         """Bookmark tree with check marks (one output file per checked entry), or 'every N pages'
         for PDFs without bookmarks. Result: None = cancelled, {} = convert the whole PDF,
-        {"kind": "chapters", "ids": [...], "titles": [...]} or {"kind": "pages", "size": N}."""
+        {"kind": "chapters", "ids": [...], "split": bool} or {"kind": "pages", "size": N}."""
 
         def __init__(self, master, path: str, current: dict | None):
             super().__init__(master)
@@ -135,10 +274,8 @@ def launch_gui() -> int:
             current = current or {}
             self.checked: set = set(current.get("ids", [])) if current.get("kind") == "chapters" else set()
             self.nodes: dict = {}          # tree item id -> Part
-            self.items: dict = {}          # Part id -> tree item id
             self.loaded: set = set()       # tree item ids whose children are inserted
             self.parts: list = []
-            self.by_id: dict = {}          # Part id -> Part
             self.parent_of: dict = {}      # Part id -> parent Part
             self.printed: dict = {}        # Part id -> printed page range ("201-205") or ""
             self.page_count = 0
@@ -160,7 +297,6 @@ def launch_gui() -> int:
                     numbers = PageNumbers(doc)
                     self.numbers_source = numbers.source
                     for part in flatten(self.parts):
-                        self.by_id[part.id] = part
                         for child in part.children:
                             self.parent_of[child.id] = part
                         self.printed[part.id] = numbers.printed_range(part.page_from, part.page_to)
@@ -250,7 +386,6 @@ def launch_gui() -> int:
                                    values=(self.printed.get(part.id) or "-", part.pages_label, part.page_count),
                                    open=False, tags=("checked",) if part.id in self.checked else ())
             self.nodes[iid] = part
-            self.items[part.id] = iid
             if part.children:
                 self.tree.insert(iid, "end", text="…")          # placeholder, replaced on expand
             else:
@@ -353,7 +488,7 @@ def launch_gui() -> int:
                 self.result = {"kind": "pages", "size": size}
             else:
                 roots = self._roots()
-                self.result = {"kind": "chapters", "ids": [p.id for p in roots], "titles": [p.title for p in roots],
+                self.result = {"kind": "chapters", "ids": [p.id for p in roots],
                                "split": bool(self.split_var.get())} if roots else {}
             self.destroy()
 
@@ -618,7 +753,6 @@ def launch_gui() -> int:
 
         # ---- conversion ------------------------------------------------------------------
         def _argv(self) -> list:
-            import shlex
             argv = list(self.files)
             argv += ["-f", self.format_var.get()]
             argv += ["--math-engine", dict(ENGINES)[self.engine_var.get()]]
@@ -634,7 +768,7 @@ def launch_gui() -> int:
                 argv += ["--pages", self.pages_var.get().strip()]
             extra = self.extra_var.get().strip()
             if extra:
-                argv += shlex.split(extra, posix=False)
+                argv += split_extra(extra)
             return argv
 
         def _start(self):
@@ -643,7 +777,11 @@ def launch_gui() -> int:
             if not self.files:
                 messagebox.showinfo(APP_TITLE, "먼저 PDF 파일을 추가하세요.")
                 return
-            argv = self._argv()
+            try:
+                argv = self._argv()
+            except ValueError as exc:                   # unclosed " in 추가 옵션
+                messagebox.showerror(APP_TITLE, f"추가 옵션의 따옴표가 맞지 않습니다: {exc}")
+                return
             try:
                 from pdf2word.cli import build_parser, options_from_args
                 args = build_parser().parse_args(argv)
@@ -655,92 +793,33 @@ def launch_gui() -> int:
             except Exception as exc:
                 messagebox.showerror(APP_TITLE, f"옵션 오류: {exc}")
                 return
+            refusal = refused_in_gui(args)
+            if refusal:
+                messagebox.showinfo(APP_TITLE, refusal)
+                return
             self._save_settings()
-            self._set_running(True)
+            self._set_running(True, options.math_engine)
             self._log_clear()
             self._log(f"$ pdf2word {' '.join(argv)}", "ok")
             for path, sel in self.selections.items():
                 if path in self.files:
                     self._log(f"  {Path(path).name}: {self._describe(sel)}", "ok")
             self.stop_flag.clear()
-            self.worker = threading.Thread(target=self._work, args=(list(self.files), options, args.verbose,
-                                                                    dict(self.selections)), daemon=True)
+            self.worker = threading.Thread(target=run_jobs, args=(self.q, self.stop_flag, list(self.files), options,
+                                                                  args.verbose, dict(self.selections)), daemon=True)
             self.worker.start()
-
-        @staticmethod
-        def _parts_for(pdf: str, sel: dict) -> list:
-            import pymupdf
-            from pdf2word.outline import page_groups, read_outline, select_parts, split_children
-            doc = pymupdf.open(pdf)
-            try:
-                if sel.get("kind") == "pages":
-                    return page_groups(doc.page_count, int(sel.get("size", 50)))
-                parts = select_parts(read_outline(doc), ",".join(sel.get("ids", [])))
-                if sel.get("split"):
-                    parts = [p for root in parts for p in split_children(doc, root)]
-                return parts
-            finally:
-                doc.close()
-
-        def _work(self, files: list, options, verbose: bool, selections: dict | None = None):
-            selections = selections or {}
-            logger = logging.getLogger("pdf2word")
-            handler = _QueueLogHandler(self.q)
-            handler.setFormatter(logging.Formatter("%(message)s"))
-            old_level = logger.level
-            logger.setLevel(logging.DEBUG if verbose else logging.INFO)
-            logger.addHandler(handler)
-            old_out, old_err = sys.stdout, sys.stderr
-            sys.stdout = sys.stderr = _StreamToQueue(self.q)
-            ok = failed = 0
-            try:
-                from pdf2word.converter import Converter
-                conv = Converter(options)
-                for pdf in files:
-                    if self.stop_flag.is_set():
-                        self.q.put(("log", "중지했습니다."))
-                        break
-                    try:
-                        sel = selections.get(pdf)
-                        if sel:
-                            parts = self._parts_for(pdf, sel)
-                            for result in conv.convert_parts(pdf, parts, stop=self.stop_flag.is_set):
-                                if result.error:
-                                    failed += 1
-                                    title = result.part.title if result.part else "?"
-                                    self.q.put(("error", f"실패: {Path(pdf).name} [{title}]: {result.error}"))
-                                else:
-                                    ok += 1
-                                    self.q.put(("result", result))
-                        else:
-                            result = conv.convert(pdf)
-                            ok += 1
-                            self.q.put(("result", result))
-                    except Exception as exc:
-                        failed += 1
-                        self.q.put(("error", f"실패: {Path(pdf).name}: {exc}"))
-                        if verbose:
-                            self.q.put(("log", traceback.format_exc()))
-            except Exception as exc:
-                self.q.put(("error", f"오류: {exc}"))
-                self.q.put(("log", traceback.format_exc()))
-            finally:
-                sys.stdout, sys.stderr = old_out, old_err
-                logger.removeHandler(handler)
-                logger.setLevel(old_level)
-                self.q.put(("finished", (ok, failed)))
 
         def _stop(self):
             self.stop_flag.set()
             self.status_var.set("현재 파일이 끝나면 중지합니다 …")
 
-        def _set_running(self, running: bool):
+        def _set_running(self, running: bool, engine: str = ""):
             self.start_btn.configure(state="disabled" if running else "normal")
             self.stop_btn.configure(state="normal" if running else "disabled")
             if running:
                 self.progress.configure(mode="indeterminate")
                 self.progress.start(12)
-                self.status_var.set("변환 중 … (첫 실행은 수식 OCR 모델 171 MB를 내려받습니다)")
+                self.status_var.set(status_text(engine))
             else:
                 self.progress.stop()
                 self.progress.configure(mode="determinate", value=0)
@@ -758,7 +837,8 @@ def launch_gui() -> int:
                         out = r.docx_path or r.md_path
                         if out:
                             self.last_out_dir = Path(out).parent
-                            self._log(f"완료: {Path(out).name}", "ok")
+                            if not r.skipped:           # as the command line, which lists written files only
+                                self._log(f"완료: {Path(out).name}", "ok")
                     elif kind == "finished":
                         ok, failed = payload
                         self._set_running(False)
@@ -784,12 +864,9 @@ def launch_gui() -> int:
 
         # ---- settings -----------------------------------------------------------------------
         def _load_settings(self):
-            try:
-                data = json.loads(_settings_path().read_text(encoding="utf-8"))
-            except Exception:
-                data = {}
+            data = load_settings()
             self.format_var.set(data.get("format", "docx"))
-            self.engine_var.set(next((t for t, v in ENGINES if v == data.get("engine", "rapid")), ENGINES[0][0]))
+            self.engine_var.set(next((t for t, v in ENGINES if v == data.get("engine", "p2t")), ENGINES[0][0]))
             self.mode_var.set(next((t for t, v in MATH_MODES if v == data.get("math_mode", "both")), MATH_MODES[0][0]))
             self.doctype_var.set(next((t for t, v in DOC_TYPES if v == data.get("doc_type", "auto")), DOC_TYPES[0][0]))
             self.beside_var.set(data.get("beside", True))
@@ -811,10 +888,7 @@ def launch_gui() -> int:
                 "offline": self.offline_var.get(),
                 "extra": self.extra_var.get(),
             }
-            try:
-                _settings_path().write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-            except Exception:
-                pass
+            save_settings(data)
 
         def _on_close(self):
             if self.worker and self.worker.is_alive():

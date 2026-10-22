@@ -14,7 +14,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from pdf2word.metadata import detect_doc_type  # noqa: E402
 from pdf2word.outline import (Part, end_y, find_heading_y, flatten, format_tree, page_groups,  # noqa: E402
-                              part_document, read_outline, select_parts, start_y, title_for_name)
+                              parse_pages, part_document, read_outline, select_parts, start_y,
+                              title_for_name)
 
 W, H = 500, 700
 
@@ -130,6 +131,39 @@ def test_doc_type_detection():
     for _ in range(100):
         big.new_page()
     assert detect_doc_type(big, "Abstract of a thesis")[0] == "document"
+
+
+def test_parse_pages_out_of_range():
+    doc = _book()                                                  # 8 pages
+    for spec in ("486-495", "9", "12,20-30", "5-3"):               # printed journal pages, typos
+        try:
+            parse_pages(spec, doc)
+        except ValueError as exc:
+            assert "no page in range" in str(exc) and "8 pages" in str(exc)
+        else:
+            raise AssertionError(f"{spec!r} matches no page and must not mean the whole PDF")
+    assert parse_pages(" ", doc) is None and parse_pages(",", doc) is None    # blank = whole PDF
+    assert parse_pages("2-60", doc) == list(range(1, 8))           # partly valid: clipped as before
+    assert parse_pages("1,50", doc) == [0]
+
+
+def test_picture_names_and_logs_use_the_pdf_page_number(tmp_path, monkeypatch, caplog):
+    # --pages 6 / a chapter is converted as a sub-document: its page 1 is page 6 of the PDF
+    import logging
+    from collections import Counter
+    from pdf2word import converter
+    from pdf2word.config import Options
+    doc = pymupdf.open()
+    page = doc.new_page(width=W, height=H)
+    page.draw_rect(pymupdf.Rect(100, 100, 300, 250), color=(0, 0, 0), fill=(0.5, 0.5, 0.5))
+    ctx = converter._DocContext(doc, tmp_path, Counter(), converter.Converter(Options(math_engine="none")),
+                                page_map=[5])
+    box = {"bbox": (100, 100, 300, 250), "index": 0, "class": "picture"}
+    assert "p6-img1.png" in ctx._picture(page, box, "", [box]) and (tmp_path / "p6-img1.png").exists()
+    monkeypatch.setattr(converter, "inline_text_math", lambda pg, bbox, seg: (seg, [("u i", "$u_i$")], ["x"]))
+    with caplog.at_level(logging.DEBUG, logger="pdf2word"):
+        ctx._text_math(page, box, "u i")
+    assert "page 6: text math 'u i'" in caplog.text and "page 6: text math not located" in caplog.text
 
 
 if __name__ == "__main__":

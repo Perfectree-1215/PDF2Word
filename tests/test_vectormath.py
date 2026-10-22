@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from pdf2word.outline import PageNumbers, parse_pages, read_outline, split_children  # noqa: E402
 from pdf2word.vectormath import (classify, cluster, doubtful_equation, find_math, inline_latex_ok,  # noqa: E402
-                                 page_atoms, text_rows)
+                                 page_atoms, reads_as_text, text_rows)
 
 W, H = 500, 700
 
@@ -71,6 +71,46 @@ def test_classify_and_find_math():
     assert eqs[0].width > 90
 
 
+def test_garbled_equation_number_keeps_drawn_equation():
+    # a broken Type 1 text layer prints the number '(5)' as eth-5-thorn; the drawn equation beside it
+    # must stay a display equation (it is in no text box, so as an inline atom it vanished from the output)
+    for label in ("(5)", "ð5Þ"):
+        doc = pymupdf.open()
+        page = doc.new_page(width=W, height=H)
+        page.insert_text((50, 100), "body text well away from the equation", fontsize=11)
+        for x in range(200, 300, 7):                                # display equation glyphs
+            _glyph(page, x, 150, 5, 10)
+        page.insert_text((320, 158), label, fontsize=11)            # its number, close on the right
+        boxes = [{"class": "text", "bbox": (50, 88, 450, 104), "pos": (0, 10)}]
+        inline, eqs = find_math(page, boxes)
+        assert not inline and len(eqs) == 1 and eqs[0].width > 90, label
+
+
+def _badge_page(link=None):
+    """A badge drawn as Elsevier prints CrossMark: a white frame around outlined letters, no text,
+    optionally under a web link (pymupdf.Rect)."""
+    doc = pymupdf.open()
+    page = doc.new_page(width=W, height=H)
+    page.insert_text((50, 100), "body text well away from the badge", fontsize=11)
+    page.draw_rect(pymupdf.Rect(380, 180, 450, 202), color=(1, 1, 1), width=1)     # white frame
+    for x in range(385, 445, 6):                                                    # outlined letters
+        page.draw_line((x, 185), (x + 3, 197), width=0.6)
+    if link is not None:
+        page.insert_link({"kind": pymupdf.LINK_URI, "from": link,
+                          "uri": "https://crossmark.crossref.org/dialog/?doi=10.1016/j.example"})
+        page = doc.reload_page(page)                                 # get_links() sees it only after a reload
+    return doc, page, [{"class": "text", "bbox": (50, 88, 300, 104), "pos": (0, 10)}]
+
+
+def test_link_badge_is_not_an_equation():
+    doc, page, boxes = _badge_page()
+    assert len(find_math(page, boxes)[1]) == 1                     # no link: a drawn display cluster
+    doc, page, boxes = _badge_page(link=pymupdf.Rect(378, 178, 452, 204))
+    assert find_math(page, boxes)[1] == []                         # under a web link of its size: a badge
+    doc, page, boxes = _badge_page(link=pymupdf.Rect(40, 170, 460, 260))
+    assert len(find_math(page, boxes)[1]) == 1                     # a link far larger than it: kept
+
+
 def test_inline_latex_plausibility():
     tiny = pymupdf.Rect(0, 0, 9, 10)
     assert inline_latex_ok(r"\Omega", tiny)
@@ -87,6 +127,33 @@ def test_inline_latex_plausibility():
     assert doubtful_equation(r"q_{in}=\bigoplus_{\vec{s}} l_{in} d\Omega")       # misread integral
     assert doubtful_equation(r"Q_{out}=(1-{\mathcal{E}}_{w})Q_{in}")
     assert not doubtful_equation(r"q_{out}=(1-\varepsilon_{w})q_{in}+\varepsilon_{w}\sigma T_{w}^{4}")
+    # p2t writes a bar over a letter as \overline{{Y}}: a correct reading, not a sign of a misread
+    assert not doubtful_equation(r"\frac{\partial\bar{\rho}\overline{{Y}}}{\partial t}=\nabla\cdot(\bar{\rho}\overline{{D}}\nabla\widetilde{Y})")
+    assert not doubtful_equation(r"\underline{{u}}=\underline{{A}}\,\underline{{x}}")
+
+
+def test_reads_as_text_tells_words_from_math():
+    # a publisher badge / wordmark drawn as graphics reads as a word ...
+    words = [r"\mathrm{CrossMark}", r"\mathrm{C r o s s M a r k}", r"\text{Check for updates}", r"\mathbf{ELSEVIER}",
+             r"\begin{array}{c}\mathrm{Cross}\\\mathrm{Mark}\end{array}", r"\mathrm{Check~for~updates}",
+             r"\mathrm{Check}\,\mathrm{for}\,\mathrm{updates}", r"\textbf{Check-for-updates}"]
+    for s in words:
+        assert reads_as_text(s), s
+    # ... but bare (italic) letters are variables - p2t's readings of a manual's Tref / CTuCrit - and
+    # anything with an operator, digit, script, fraction, root, Greek letter, other command or a single
+    # letter (the d of dx, a bold vector) is math, and so is a short abbreviation
+    maths = ["Tref", "CTuCrit", "CrossMark", r"\mathit{Tmean}", r"x=y+z", r"\mathrm{Re}=\frac{\rho u L}{\mu}", r"\frac{\mathrm{d}u}{\mathrm{d}t}",
+             r"\operatorname{div}\mathbf{u}", r"\mathrm{grad}\,\phi", r"\text{if } x>0", r"\mathrm{Nu}", r"q_{in}",
+             r"\sin x", r"abc", r"\mathrm{grad}\mathbf{u}", r"\mathrm{curl}\,\mathbf{v}", r"\mathrm{d}x",
+             r"\mathrm{Re}\,\mathrm{Pr}", r"\begin{aligned} a &= b \\ &+ c \end{aligned}", r"\alpha\beta\gamma\delta",
+             "\u03b1\u03b2\u03b3\u03b4", r"\mathrm{CO_2}", r"\mathrm{H}_{2}\mathrm{O}", r"\mathrm{velocity}^{2}",
+             r"\frac{\mathrm{mass}}{\mathrm{volume}}", r"\sqrt{\mathrm{area}}", r"\mathrm{Flux}=q", r"\mathrm{const}-x",
+             r"\mathrm{const}\,x", r"\mathrm{Gr}\cdot\mathrm{Pr}", r"\boldsymbol{\sigma}", r"\mathbf{F}", r"\mathrm{max}",
+             r"\sum_{i} w_{i}", r"\int_{0}^{1} f\,dx", r"\mathrm{Re}_{\mathrm{crit}}", r"\text{Velocity}\ (\mathrm{m/s})",
+             r"\mathrm{Volume}\,2", r"\mathrm{energy}'", r"\mathrm{const}.", r"\mathrm{C}\mathrm{r}\mathrm{o}\mathrm{s}\mathrm{s}",
+             r"\overline{\mathrm{flux}}", r"\mathrm{Mark}^{\circledR}", "", "   ", None]
+    for s in maths:
+        assert not reads_as_text(s), s
 
 
 def _labelled_doc():

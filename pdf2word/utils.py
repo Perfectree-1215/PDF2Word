@@ -34,8 +34,11 @@ def setup_logging(verbose: bool = False) -> None:
 
 
 def fold_ascii(text: str) -> str:
-    """Strip combining diacritics (Müller -> Muller); non-Latin scripts are kept as-is."""
-    return "".join(ch for ch in unicodedata.normalize("NFKD", text) if not unicodedata.combining(ch))
+    """Strip Latin diacritics (Müller -> Muller) and expand compatibility forms (the ligature
+    U+FB01 -> fi); other scripts are kept and returned composed (NFC): Hangul syllables, kana
+    with (han)dakuten (が, パ)."""
+    s = "".join(ch for ch in unicodedata.normalize("NFKD", text) if not "\u0300" <= ch <= "\u036f")
+    return unicodedata.normalize("NFC", s)
 
 
 def safe_name(text: str, maxlen: int = 80, sep: str = "-") -> str:
@@ -46,6 +49,15 @@ def safe_name(text: str, maxlen: int = 80, sep: str = "-") -> str:
     text = re.sub(rf"{re.escape(sep)}{{2,}}", sep, text)
     text = text.strip(sep + ". ")
     return text[:maxlen].rstrip(sep + ". ") or "untitled"
+
+
+def wiki_safe_name(text: str, maxlen: int = 80) -> str:
+    """safe_name() for an asset folder: also without [ ] # ^ |, which end or split an Obsidian
+    wiki link ![[folder/fig.png]] (heading / block reference / alias) and so drop the picture
+    from the .docx too. File names keep them (safe_name)."""
+    text = re.sub(r"[\[\]#^|]+", "-", safe_name(text, maxlen))
+    text = re.sub(r"-{2,}", "-", text).strip("-. ")
+    return text or "untitled"
 
 
 def slugify_title(title: str, max_words: int = 8, maxlen: int = 70) -> str:
@@ -68,16 +80,6 @@ def cache_dir() -> Path:
         base = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
     path = Path(base) / "pdf2word"
     path.mkdir(parents=True, exist_ok=True)
-    legacy = Path(base) / "pdf2obsidian"           # the tool's former name: reuse its caches once
-    if legacy.is_dir():
-        import shutil
-        for f in legacy.glob("*.json"):
-            target = path / f.name
-            if not target.exists():
-                try:
-                    shutil.copy2(f, target)
-                except OSError:
-                    pass
     return path
 
 

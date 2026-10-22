@@ -6,8 +6,11 @@ MML2OMML.XSL (the test accepts the LaTeX-text fallback when they are missing).
 """
 from __future__ import annotations
 
+import re
 import sys
 import tempfile
+import unicodedata
+from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -15,8 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from pdf2word.config import Options  # noqa: E402
 from pdf2word.docx_out import OmmlConverter, build_docx  # noqa: E402
 from pdf2word.metadata import PaperMeta  # noqa: E402
-
-M_NS = "http://schemas.openxmlformats.org/officeDocument/2006/math"
+from pdf2word.obsidian import image_link  # noqa: E402
 
 SAMPLE_MD = """# Inline Equation Images in Word Documents
 
@@ -126,8 +128,125 @@ def test_prepare_latex():
     assert prep(r"\Bigl(a\Bigr) \tag{3}") == r"\left(a\right)"
     assert prep(r"\Big(x\Big)") == "(x)"
     assert prep(r"\begin{gathered}a\\b\end{gathered}") == r"\begin{matrix}a\\b\end{matrix}"
-    assert prep(r"\stackrel{\rightarrow}{v}_f") == r"\vec{v}_f"
     assert prep(r"\left(a") == "(a"                         # unbalanced sizing commands dropped
+    assert prep(r"\left(a\right)\rightarrow b") == r"\left(a\right)\rightarrow b"   # an arrow is no \right
+    assert prep(r"\left. x\right|_{0}\right)") == r"x|_{0})"                       # no stray '.'
+
+
+def _docx(tmp_path: Path, md: str, title: str = "Untitled Test", name: str = "out.docx"):
+    """Build md into tmp_path/name under a title-only PaperMeta; return (document, stats)."""
+    import docx
+    stats = {}
+    out = build_docx(md, PaperMeta(title=title), tmp_path, tmp_path / name, Options(), stats)
+    return docx.Document(str(out)), stats
+
+
+def _letters(text: str) -> Counter:
+    """The letters and digits of text: what a reader would miss, ignoring markup and spacing."""
+    return Counter(re.sub(r"[\W_]", "", text))
+
+
+def test_prepare_big_operators_and_angle_delims():
+    prep = OmmlConverter.prepare
+    big_ops = ("cup", "cap", "oplus", "otimes", "odot", "sqcup", "uplus", "vee", "wedge",
+               "circ", "star", "triangleup", "triangledown")
+    for op in big_ops:                                  # \bigcup is an operator, not \big + "cup"
+        assert prep(rf"\big{op}_{{i}} A_i") == rf"\big{op}_{{i}} A_i"
+    assert prep(r"\bigl\langle x \bigr\rangle") == r"\left\langle x \right\rangle"
+    assert prep(r"\Bigl\lfloor n \Bigr\rfloor") == r"\left\lfloor n \right\rfloor"
+    assert prep(r"\bigl. \frac{a}{b} \bigr|_{0}") == r"\left. \frac{a}{b} \right|_{0}"
+    assert prep(r"\Bigl. x |") == "x |"                 # unmatched null delimiter: no stray 'l' or '.'
+    assert prep(r"\Bigm| y") == "| y"
+    conv = OmmlConverter()
+    if not conv.available:                              # no Office stylesheet: prepare() is checked above
+        return
+    def text(latex):                                    # what Word prints; an n-ary sign sits in <m:chr m:val>
+        om = conv.omml(latex)
+        signs = [v for e in om.iter() if e.tag.endswith("}chr") for v in e.attrib.values()]
+        return "".join(signs) + "".join(om.itertext())
+
+    for op, sym in zip(big_ops, "⋃⋂⨁⨂⨀⨆⨄⋁⋀◯★△▽"):
+        t = text(rf"\big{op}_{{i=1}}^{{n}} A_i")
+        assert sym in t and op not in t, (op, t)
+    assert text(r"\bigl\langle x, y \bigr\rangle") == "⟨x,y⟩"
+    assert "." not in text(r"\bigl. \frac{df}{dx} \bigr|_{x=0}")
+
+
+def test_numbered_lines_keep_source_numbers(tmp_path):
+    md = ("1. Heat the sample.\n2. Cool the sample.\n\nText between the lists.\n\n"
+          "5. Fifth step of a list that starts at five.\n6. Sixth step.\n\n- a bullet item\n\n"
+          "## References\n\n1. A. Author, First reference, 2020.\n2. B. Author, Second reference, 2021.\n")
+    d, _ = _docx(tmp_path, md)
+    texts = [p.text for p in d.paragraphs]
+    for line in ("1. Heat the sample.", "2. Cool the sample.", "5. Fifth step of a list that starts at five.",
+                 "6. Sixth step.", "1. A. Author, First reference, 2020.", "2. B. Author, Second reference, 2021."):
+        assert line in texts                            # the number printed in the PDF, not Word's counter
+    assert not any(p.style.name == "List Number" for p in d.paragraphs)
+    assert [p.text for p in d.paragraphs if p.style.name == "List Bullet"] == ["a bullet item"]
+
+
+def test_markdown_image_links_with_non_ascii_asset_dir(tmp_path):
+    folders = ["_asset-김-2024",                                  # Hangul author name
+               unicodedata.normalize("NFD", "_asset-김-2024"),     # ... spelled in jamo, as safe_name folds it
+               "_asset-Manual-(v2),-rev'3",                        # ASCII that quote() escapes
+               "_asset-100%-done"]                                  # a literal '%'
+    cases = [(f, "markdown") for f in folders] + [("_asset-a%20b", "wiki")]   # '%20' is the real name
+    for k, (folder, style) in enumerate(cases):
+        base = tmp_path / f"case{k}"
+        (base / folder).mkdir(parents=True)
+        for name, size in (("fig1.png", (400, 200)), ("eq-1.png", (240, 60)), ("sym-1.png", (30, 30))):
+            _make_png(base / folder / name, size=size)
+        link = lambda name: image_link(f"{folder}/{name}", Path(name).stem, style)   # noqa: E731
+        md = (f"{link('fig1.png')}\n\n**Figure 1.** A caption. ^fig-1\n\n{link('eq-1.png')}\n$$\na=b\n$$\n\n"
+              f"A symbol {link('sym-1.png')} in running text.\n")
+        d, stats = _docx(base, md)
+        assert len(d.inline_shapes) == 3, (folder, style)            # figure, equation crop, symbol
+        assert stats.get("docx_pictures") == 2 and stats.get("docx_inline_pictures") == 1
+
+
+def test_non_latin_title_not_repeated(tmp_path):
+    for k, title in enumerate(("한국어 합성 논문 제목의 반복 검사", "Синтетическая статья о выводе")):
+        md = f"# {title}\n\nBody text.\n\n# 서론\n\nMore text.\n"
+        d, _ = _docx(tmp_path, md, title=title, name=f"t{k}.docx")
+        texts = [p.text for p in d.paragraphs]
+        assert texts.count(title) == 1 and d.paragraphs[0].style.name == "Title"
+        assert "서론" in texts                           # another level-1 heading is still written
+
+
+def test_caret_at_line_end_is_not_block_id(tmp_path):
+    md = ("A 32-bit counter overflows at 2^31\n\nThe plate area is 4 m^2\n\n"
+          "**Figure 1.** A caption with an anchor. ^fig-1\n\nEquation follows.\n^eq-3\n")
+    d, _ = _docx(tmp_path, md)
+    texts = [p.text for p in d.paragraphs]
+    assert "A 32-bit counter overflows at 2^31" in texts and "The plate area is 4 m^2" in texts
+    assert "Figure 1. A caption with an anchor." in texts and "Equation follows." in texts
+    assert not any("^fig-1" in t or "^eq-3" in t for t in texts)
+
+
+def test_equation_image_sits_right_before_its_equation(tmp_path):
+    (tmp_path / "_asset-x").mkdir()
+    for name in ("eq-1.png", "eq-2.png"):
+        _make_png(tmp_path / "_asset-x" / name, size=(240, 60))
+    md = ("Before.\n\n![[_asset-x/eq-1.png]]\n$$\na=b \\tag{1}\n$$\n\n"
+          "![[_asset-x/eq-2.png]]\n\n$$\nc=d \\tag{2}\n$$\n\n"
+          "![[_asset-x/eq-9.png]]\n$$\ne=f \\tag{3}\n$$\n\nAfter.\n")      # eq-9.png does not exist
+    d, _ = _docx(tmp_path, md)
+    seq = ["pic" if "graphicData" in p._p.xml else p.text.rstrip()[-3:] if p.text.rstrip().endswith(")")
+           else p.text for p in d.paragraphs[1:]]
+    assert seq == ["Before.", "pic", "(1)", "pic", "(2)", "(3)", "After."]
+
+
+def test_paragraph_text_is_preserved(tmp_path):
+    title = "한국어 합성 논문 제목의 반복 검사"
+    md = (f"# {title}\n\n1. Heat the sample.\n2. Cool the sample.\n\nText between the lists.\n\n"
+          "5. Fifth step of a list that starts at five.\n6. Sixth step.\n\n- a bullet item\n\n"
+          "A 32-bit counter overflows at 2^31\nThe plate area is 4 m^2\n\n"
+          "**Figure 1.** A caption with an anchor. ^fig-1\n\n## References\n\n"
+          "1. A. Author, First reference, 2020.\n2. B. Author, Second reference, 2021.\n")
+    d, _ = _docx(tmp_path, md, title=title)
+    # every letter and digit of the Markdown reaches Word exactly once (the '# title' line becomes the
+    # Title paragraph); only the ^fig-1 anchor is markup
+    assert _letters("".join(p.text for p in d.paragraphs)) == _letters(md.replace("^fig-1", ""))
 
 
 if __name__ == "__main__":
@@ -135,7 +254,11 @@ if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_") and callable(fn):
             try:
-                fn()
+                if fn.__code__.co_argcount:
+                    with tempfile.TemporaryDirectory() as tmp:
+                        fn(Path(tmp))
+                else:
+                    fn()
                 print("ok  ", name)
             except AssertionError as exc:
                 failures += 1
