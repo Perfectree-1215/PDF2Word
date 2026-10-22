@@ -92,8 +92,16 @@ def test_decoder_loops_are_cut_short():
     r = _runner([6, 7, 11] * 40)
     assert r.recognize(IMG) is None
     assert r._dec.steps < 40                                                    # stopped long before the cap
-    assert _repeating([1, 2, 3] * 6) and _repeating([5] * 8)
-    assert not _repeating(list(range(40))) and not _repeating([1, 2])
+    assert _repeating([1, 2, 3] * 11) and _repeating([5] * 32)
+    assert all(_repeating(list(range(1, p + 1)) * 40) for p in range(1, 9))     # periods 1-8
+    assert not _repeating(list(range(40))) and not _repeating([1, 2]) and not _repeating([5] * 31)
+
+
+def test_legitimate_repeats_are_not_loops():
+    # byte-level BPE: ' }' is one id, so four closing braces are four equal ids in a row
+    script = [3, 4, 6, 5, 4, 3, 4, 7, 5, 4, 3, 4, 8, 5, 4, 6, 9, 4, 11, 5, 5, 5, 5]
+    assert _runner(script).recognize(IMG) == r"\frac{a}{\frac{b}{\frac{x}{a^{2}}}}"
+    assert _runner([8, 10, 4, 11, 11, 11, 11, 11, 5]).recognize(IMG) == "x_{22222}"   # Re=10000, {cccc}
 
 
 # ----------------------------------------------------------------------------- pre / post processing
@@ -119,6 +127,11 @@ def test_postprocess_compacts_and_repairs():
         == r"\begin{aligned}&{a}\\&{=b}\end{aligned}"
     assert postprocess(r"\pmb { x } \mathsf { y }") == r"\boldsymbol{x}\mathrm{y}"
     assert postprocess("") == ""
+    assert postprocess(r"a \to { } b") == r"a\to{}b"                            # {} only ends the command word
+    assert postprocess(r"{ } ^ { 1 4 } \mathrm { C }") == r"{}^{14}\mathrm{C}"  # empty base of a pre-script
+    assert postprocess(r"x + { } ^ { 1 4 } \mathrm { C }") == r"x+{}^{14}\mathrm{C}"
+    assert postprocess(r"\begin{array} { l } a = b \\ i t = c \end{array}") \
+        == r"\begin{array}{l}a=b\\ it=c\end{array}"                            # row break, then 'it'
 
 
 # ----------------------------------------------------------------------------- model files
@@ -139,7 +152,7 @@ def _fake_files(monkeypatch, served: dict):
     def _open_url(url, timeout=60.0):
         calls.append(url)
         name = url.rsplit("/", 1)[1]
-        data = served[name] if "mirror" not in url else served[name]
+        data = served[name]
         return iter([data[:3], data[3:]]), len(data)
     monkeypatch.setattr(mfr_onnx, "_open_url", _open_url)
     return calls
@@ -155,6 +168,23 @@ def test_ensure_model_downloads_verifies_and_reuses(monkeypatch, tmp_path):
     (tmp_path / "tok.json").write_bytes(b"damaged")                             # wrong size -> fetched again
     ensure_model(tmp_path)
     assert len(calls) == 3 and (tmp_path / "tok.json").read_bytes() == b"{}"
+
+
+def test_ensure_model_falls_back_to_the_mirror(monkeypatch, tmp_path):
+    data = b"encoder-bytes"
+    monkeypatch.setattr(mfr_onnx, "MODEL_FILES", {"enc.onnx": (len(data), hashlib.sha256(data).hexdigest())})
+    calls = []
+
+    def _open_url(url, timeout=60.0):
+        calls.append(url)
+        if "hf-mirror.com" not in url:
+            raise OSError("huggingface.co unreachable")
+        return iter([data[:3], data[3:]]), len(data)
+    monkeypatch.setattr(mfr_onnx, "_open_url", _open_url)
+    assert ensure_model(tmp_path) == tmp_path
+    assert (tmp_path / "enc.onnx").read_bytes() == data
+    assert len(calls) == 2 and "huggingface.co" in calls[0] and "hf-mirror.com" in calls[1]
+    assert not list(tmp_path.glob("*.part"))
 
 
 def test_ensure_model_rejects_a_bad_download(monkeypatch, tmp_path):

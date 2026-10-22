@@ -85,7 +85,7 @@ py -3.12 -m venv .venv
 
 챕터별 파일 이름은 `문서명-번호-챕터제목.docx`입니다(예: `Ansys_Fluent_Users_Guide-04-Chapter-4-Starting-and-Executing-Ansys-Fluent.docx`). 번호는 책갈피에서 같은 단계 항목의 순번이라 어떤 챕터를 고르든 바뀌지 않고, 자릿수는 항목 수에 맞춰 `01` 또는 `001`이 됩니다. 챕터가 쪽 중간에서 시작하거나 끝나면 책갈피가 가리키는 제목 줄에서 잘라 이웃 챕터의 내용은 넣지 않습니다. *하위 항목별로 나누기*를 켜면 `문서명-05-Chapter-5-Heat-Transfer.docx`(챕터 제목 뒤의 서론만), `문서명-012-5.1-….docx`, `문서명-013-5.2-….docx`처럼 저장됩니다. 문서 머리에는 책 제목과 쪽 범위가 `p. 201-205 (PDF 249-253)` 꼴로 들어갑니다.
 
-처리 시간은 20쪽 논문 기준 보통 2~8분이고, 수식이 많을수록 깁니다. 같은 논문을 다시 돌리면 OCR 결과가 캐시되어 1분 안팎이면 끝납니다. 6,056쪽 매뉴얼에서 5쪽짜리 절 하나를 떼어 내는 데는 15초 안팎이 걸립니다. 마지막에 쓴 설정은 기억됩니다.
+처리 시간은 20쪽 논문 기준 보통 2~8분이고, 수식이 많을수록 깁니다. 같은 논문을 다시 돌리면 OCR 결과가 캐시되어 1분 안팎이면 끝납니다(캐시 형식이 바뀐 업데이트 뒤 — 예를 들어 캐시 버전 3이 처음 쓰이는 변환 — 에는 모든 식을 다시 읽어 첫 변환만큼 걸립니다). 6,056쪽 매뉴얼에서 5쪽짜리 절 하나를 떼어 내는 데는 15초 안팎이 걸립니다. 마지막에 쓴 설정은 기억됩니다.
 
 GUI에 없는 옵션은 **추가 옵션** 칸에 명령줄 옵션을 그대로 적으면 됩니다(예: `--author Kim --year 2024 --citations footnotes`). 옵션 목록은 [5절](#5-고급-명령줄과-옵션)에 있습니다.
 
@@ -98,7 +98,7 @@ GUI에 없는 옵션은 **추가 옵션** 칸에 명령줄 옵션을 그대로 �
 파일 하나에 모든 그림과 수식 이미지가 들어 있습니다.
 
 - 머리: 제목 → 저자 → 저널·연도·DOI → Keywords
-- 본문: 섹션 제목(제목 1~3), 문단, 표(Word 표), 그림(캡션 스타일)
+- 본문: 섹션 제목(제목 1~3), 문단, 목록(번호 목록은 Word 자동 번호 대신 원문 번호를 그대로 적은 문단), 표(Word 표), 그림(캡션 스타일)
 - 수식: `[원본 수식 이미지]` 바로 아래에 Word 수식과 오른쪽 정렬된 식 번호. 수식 위에서 더블클릭하면 Word 수식 편집기로 고칠 수 있습니다.
 - 본문 속 작은 수식(ρ<sub>f</sub>, u<sub>i</sub> 같은 것)도 Word 수식으로 들어갑니다.
 
@@ -109,7 +109,7 @@ papers\
 ├── Ma-2025-Numerical-modeling-wet-milling-improved-CFD-DEM-VOF.md
 └── _asset-Ma-2025\
     ├── fig1.png  fig2a.png  fig2b.png …   # 캡션(Figure 2.)에 맞춘 이름, 서브패널은 a/b/c
-    ├── p7-img3.png                        # 캡션을 못 찾은 그림: p<페이지>-img<번호>
+    ├── p7-img3.png                        # 캡션을 못 찾은 그림: p<PDF 쪽>-img<번호> (챕터·--pages로 일부만 변환해도 원본 PDF의 쪽 번호)
     └── eq-12.png                          # 수식 이미지(식 번호 기준)
 ```
 
@@ -186,18 +186,18 @@ python main_gui.py paper.pdf -f md       # main_gui.py 도 인자를 주면 명�
 | `-o, --out-dir` | PDF 폴더 | 출력 폴더 |
 | `--doc-type` | `auto` | `paper`(논문: 서지 조회·초록·참고문헌 처리) / `document`(책·매뉴얼·보고서) / `auto`(첫 두 쪽에 DOI·arXiv·Abstract가 있으면 논문) |
 | `--list-chapters` | | 책갈피 트리(번호, 쪽 범위)만 출력하고 변환하지 않음. `--chapter-depth`로 보이는 깊이 조절 |
-| `--chapters` | | 변환할 책갈피 번호: `3,4.2,5.1-5.4`, `all`(1단계 전부), `all:2`(2단계 전부). 항목마다 파일 하나 |
+| `--chapters` | | 변환할 책갈피 번호: `3,4.2,5.1-5.4`, `all`(1단계 전부), `all:2`(2단계 전부). 항목마다 파일 하나. 아무 항목도 고르지 않는 값(`3-1`, 없는 단계의 `all:9`, 빈 값)은 전체를 변환하지 않고 오류로 끝남 |
 | `--chapter-split` | `exact` | 이웃 챕터와 쪽을 나눠 쓰는 경계를 책갈피 위치(제목 줄)에서 자름. `page`면 쪽 단위 |
 | `--chapter-template` | `{stem}-{num}-{title}` | 챕터 파일 이름. `{id}`(책갈피 번호) `{p0}` `{p1}`(쪽 범위)도 사용 가능 |
 | `--split-pages` | 0 | N쪽마다 한 파일(책갈피 없는 PDF용). 이름은 `{stem}-{num}-p0001-0050` |
 | `--subchapters` | 끔 | 고른 항목을 바로 아래 하위 항목마다 파일로 나눔. 첫 하위 항목 앞의 서론은 항목 제목의 파일로 |
 | `--math-engine` | `p2t` | `p2t`(Pix2Text MFR 1.5, 로컬·무료, 여러 줄 식을 통째로 읽음, 모델을 못 받으면 `rapid`로 대체) / `rapid`(RapidLaTeXOCR, 로컬, 폴백) / `claude`(API) / `none`(OCR 없이 이미지만) |
-| `--math-zooms` | 엔진별 | 수식을 읽을 때 시도하는 렌더 배율을 순서대로(예: `4,3,2`). 생략하면 엔진 기본: `p2t` 4,3,2 / `rapid` 2,3,4 |
+| `--math-zooms` | 엔진별 | 수식을 읽을 때 시도하는 렌더 배율을 순서대로(예: `4,3,2`). 생략하면 엔진 기본: `p2t` 4,3,2 / `rapid` 2,3,4. 숫자가 아니거나(`4x,3x`) 0·음수인 값은 오류(종료 코드 2) |
 | `--math-mode` | `both` | `both`(이미지 + OCR 결과) / `latex`(OCR 결과만, 실패·불확실 시 이미지) / `image` |
 | `--docx-math` | `native` | Word 수식: `native`(편집 가능한 수식, Office 필요) / `text`(LaTeX 문자열) |
 | `--author`, `--year`, `--title` | 자동 | 서지정보를 직접 지정 (파일·폴더 이름에 쓰임) |
 | `--offline` | 끔 | CrossRef/arXiv 조회 안 함 |
-| `--asset-template` | 종류별 | 에셋 폴더 이름. 논문 `_asset-{author}-{year}`, 일반 문서 `_asset-{stem}`, 챕터 `_asset-{stem}-{num}` |
+| `--asset-template` | 종류별 | 에셋 폴더 이름. 논문 `_asset-{author}-{year}`, 일반 문서 `_asset-{stem}`, 챕터 `_asset-{stem}-{num}`. 위키링크를 깨는 `[ ] # ^ \|`는 `-`로 바뀌고(`_asset-Manual-[2nd-ed]-#3` → `_asset-Manual-2nd-ed-3`), 같은 이름 폴더에 다른 노트의 그림이 있으면 `-2`, `-3`…을 붙임 |
 | `--name-template` | 종류별 | 결과 파일 이름. 논문 `{author}-{year}-{title}`, 일반 문서 `{stem}` (`{stem}` = PDF 파일 이름) |
 | `--image-links` | `wiki` | `wiki` = `![[…]]`, `markdown` = `![](…)` |
 | `--citations` | `keep` | `footnotes`로 하면 `[12]` → `[^12]` 각주 |
@@ -255,7 +255,7 @@ print(r.docx_path, r.md_path, r.asset_dir, r.stats)
 
 ```bash
 uv sync --locked --extra dev          # 개발용 환경(.venv, Python 3.12, pytest 포함)
-.venv\Scripts\python -m pytest tests -q   # 순수 함수 테스트 57개 (모델·네트워크 불필요)
+.venv\Scripts\python -m pytest tests -q   # 테스트 222개 (합성 데이터만, 모델·네트워크 불필요)
 pdf2word sample.pdf --pages 1-5 -v    # 실제 변환 확인
 ```
 

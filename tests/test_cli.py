@@ -1,0 +1,52 @@
+"""pdf2word.cli: option values the parser refuses up front (exit code 2, a usage message)
+instead of a traceback, a silently dropped value or a whole-PDF conversion. The GUI's 추가 옵션
+goes through the same parser. No PDF, no network, no model.
+
+Run:  python -m pytest tests/test_cli.py -q
+"""
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from pdf2word.cli import build_parser, options_from_args  # noqa: E402
+
+
+def _parse(*argv):
+    return build_parser().parse_args(["x.pdf", *argv])
+
+
+def _refused(capsys, *argv) -> str:
+    with pytest.raises(SystemExit) as exc:
+        _parse(*argv)
+    assert exc.value.code == 2
+    return capsys.readouterr().err
+
+
+# ----------------------------------------------------------------------------- #118
+
+def test_math_zooms_are_checked_by_argparse(capsys):
+    assert _parse("--math-zooms", "4,3").math_zooms == (4.0, 3.0)
+    assert _parse("--math-zooms", " 2.5 , 3 ,").math_zooms == (2.5, 3.0)
+    assert _parse("--math-zooms", " ").math_zooms is None              # blank: the engine's own order
+    assert _parse().math_zooms is None
+    for bad in ("4x,3x", "4;3", "0,2", "-1", "3,-3", "nan", "inf"):
+        assert "--math-zooms" in _refused(capsys, "--math-zooms", bad), bad
+
+
+def test_math_zooms_reach_the_options():
+    assert options_from_args(_parse("--math-zooms", "4,3,2")).math_zooms == (4.0, 3.0, 2.0)
+    assert options_from_args(_parse()).math_zooms is None
+
+
+# ----------------------------------------------------------------------------- blank --chapters
+
+def test_blank_chapters_are_refused(capsys):
+    for bad in (" ", "", "\t"):
+        assert "--chapters" in _refused(capsys, "--chapters", bad), repr(bad)
+    assert _parse("--chapters", "3,4.2").chapters == "3,4.2"
+    assert _parse().chapters is None

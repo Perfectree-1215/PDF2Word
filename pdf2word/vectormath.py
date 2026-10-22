@@ -12,7 +12,7 @@ from typing import Optional
 
 import pymupdf
 
-from .mathocr import LABEL_RE, TEXT_FLAGS
+from .mathocr import LABEL_RE, TEXT_FLAGS, label_text
 from .utils import log
 
 MAX_PATHS = 2500                 # pages with more vector paths (dense plots) are skipped
@@ -20,8 +20,9 @@ GLYPH_GAP = (3.0, 2.0)           # pt: outlines closer than this form one symbol
 EQUATION_GAP = (14.0, 7.0)       # pt: terms closer than this form one display equation
 ROW_REACH = 40.0                 # pt: an atom this close to a text line (horizontally) is inline
 SKIP_CLASSES = ("picture", "table", "formula", "page-header", "page-footer")
+LINK_BADGE_RATIO = 4.0           # a web link at most this many times a drawn cluster's area marks a badge
 _DOUBTFUL = re.compile(r"\\(mathcal|mathscr|mathfrak|S\b|boldmath|textstyle|scriptstyle|quad|qquad|stackrel|"
-                       r"xrightarrow|xleftarrow|underline|overline\{\{|operatorname\{\s*\}|mathrm\{\s*\})|\{\s*\}|"
+                       r"xrightarrow|xleftarrow|underline|operatorname\{\s*\}|mathrm\{\s*\})|\{\s*\}|"
                        r"\\[,;!:]|\\ |\\\\|&")
 _SIMPLE = re.compile(r"(?:\\(?:vec|hat|bar|dot|ddot|tilde|mathbf|boldsymbol)\{[A-Za-z]\}|\\[A-Za-z]+|[A-Za-z])"
                      r"(?:_\{[^{}]{1,10}\}|_[A-Za-z0-9])?(?:\^\{[^{}]{1,6}\}|\^[A-Za-z0-9])?"
@@ -67,6 +68,14 @@ def cluster(rects, gx: float, gy: float) -> list:
 def _covered(r: pymupdf.Rect, s: pymupdf.Rect, frac: float = 0.5) -> bool:
     inter = r & s
     return (not inter.is_empty) and inter.get_area() >= frac * max(r.get_area(), 1e-6)
+
+
+def _uri_links(page) -> list:
+    """Rects of the page's web links (badges such as CrossMark or Check for updates are links)."""
+    try:
+        return [pymupdf.Rect(lk["from"]) for lk in page.get_links() if lk.get("kind") == pymupdf.LINK_URI]
+    except Exception:
+        return []
 
 
 def page_atoms(page, boxes: list, images=(), use_vector: bool = True) -> list:
@@ -150,7 +159,7 @@ def text_rows(page) -> list:
     for row in rows:
         hs = sorted(lr.height for lr, _ in row["lines"])
         row["height"] = hs[len(hs) // 2]
-        row["label_only"] = all(LABEL_RE.match(t) for _, t in row["lines"])
+        row["label_only"] = all(LABEL_RE.match(label_text(t)) for _, t in row["lines"])
     return rows
 
 
@@ -167,7 +176,7 @@ def classify(atoms: list, rows: list):
             if a.height > 1.9 * row["height"]:
                 continue
             for lr, text in row["lines"]:
-                if LABEL_RE.match(text):
+                if LABEL_RE.match(label_text(text)):
                     continue
                 if lr.x0 - ROW_REACH <= a.x1 and a.x0 <= lr.x1 + ROW_REACH:
                     hit = True
@@ -186,18 +195,42 @@ def find_math(page, boxes: list, images=(), use_vector: bool = True):
     inline, display = classify(atoms, text_rows(page))
     eqs = cluster(display, *EQUATION_GAP) if display else []
     eqs = [e for e in eqs if e.width >= 8 and e.height >= 6 and not (e.width < 14 and e.height < 14)]
+    # a drawn cluster mostly under a web link of about its size is a badge (Elsevier CrossMark: a white
+    # frame + the outlined word 'CrossMark', paper-01 p.1), not an equation
+    links = _uri_links(page) if eqs else []
+    eqs = [e for e in eqs
+           if not any(_covered(e, lr) and lr.get_area() <= LINK_BADGE_RATIO * e.get_area() for lr in links)]
     return inline, eqs
 
 
 # ----------------------------------------------------------------------------- OCR plausibility
 
-_DOUBTFUL_EQ = re.compile(r"\\(mathcal|mathscr|mathfrak|textstyle|scriptstyle|boldmath|overline\{\{|underline\{\{|S\b"
+_DOUBTFUL_EQ = re.compile(r"\\(mathcal|mathscr|mathfrak|textstyle|scriptstyle|boldmath|S\b"
                           r"|bigoplus|bigotimes|bigodot|biguplus|bigsqcup)|\{\s*\}")   # big operators: misread integrals
 
 
 def doubtful_equation(latex: Optional[str]) -> bool:
-    """Signs that pix2tex misread a display equation it had no text layer to be checked against."""
+    """Signs that the OCR misread a display equation it had no text layer to be checked against."""
     return bool(latex) and bool(_DOUBTFUL_EQ.search(latex))
+
+
+_TEXT_GROUP = re.compile(r"\\(?:mathrm|mathbf|mathsf|text|textrm|textbf|textit|textsf)\s*\{([^{}]*)\}")
+_WORD = re.compile(r"[A-Za-z]{2,}(?:[.\-][A-Za-z]+)*\.?")
+
+
+def reads_as_text(latex: Optional[str]) -> bool:
+    """A reading that is a word (a publisher badge or wordmark drawn as graphics), not math. Kept
+    narrow on purpose: nothing but words of two or more letters set upright in \\mathrm / \\text /
+    \\mathbf ... groups, one of them at least four letters long. Bare letters are italic variables
+    (Tref, CTuCrit in manuals); any operator, digit, sub- or superscript, fraction, root, Greek letter
+    or other command, and any single letter (\\mathrm{d}, a bold vector), makes it math."""
+    s = latex or ""
+    s = re.sub(r"\\begin\{[a-zA-Z*]+\}(?:\{[^{}]*\})?|\\end\{[a-zA-Z*]+\}", " ", s)   # array rows
+    s = re.sub(r"\\\\|\\[,;:! ]|\\q?quad\b|~", " ", s)                                 # breaks, spaces
+    words: list = []
+    rest = _TEXT_GROUP.sub(lambda m: words.append(re.sub(r"\s+", "", m.group(1))) or " ", s)
+    return (bool(words) and not rest.strip() and all(_WORD.fullmatch(w) for w in words)
+            and max(len(re.sub(r"[^A-Za-z]", "", w)) for w in words) >= 4)
 
 
 def inline_latex_ok(latex: Optional[str], rect) -> bool:

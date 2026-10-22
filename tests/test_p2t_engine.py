@@ -144,7 +144,21 @@ def test_results_are_cached_per_engine(page, tmp_path, monkeypatch):
     assert eng.calls == 1 and ocr.cache_hits == 1
     other = Stub([B, B])
     other.name = "other"
-    assert EquationOCR(other, zooms=(3,), cache=True).recognize_region(page, RECT, "").latex == B
+    ocr.engine = other                                      # same cache, another engine: not its entries
+    assert ocr.recognize_region(page, RECT, "").latex == B and other.calls == 1
+
+
+def test_disabled_cache_touches_no_profile_folder(page, tmp_path, monkeypatch):
+    # cache=False (--no-cache, most tests here) must not create %LOCALAPPDATA%\pdf2word nor copy
+    # the old pdf2obsidian caches into it
+    for var in ("LOCALAPPDATA", "XDG_CACHE_HOME"):
+        monkeypatch.setenv(var, str(tmp_path))
+    (tmp_path / "pdf2obsidian").mkdir()
+    (tmp_path / "pdf2obsidian" / "mathocr-cache.json").write_text("{}", encoding="utf-8")
+    ocr = EquationOCR(Stub([A, A]), cache=False)
+    assert ocr.recognize_region(page, RECT, "").latex == A
+    ocr.cache.save()
+    assert [p.name for p in tmp_path.iterdir()] == ["pdf2obsidian"]
 
 
 # ----------------------------------------------------------------------------- round 2 (decision workflow lenses)
@@ -169,13 +183,137 @@ def test_scale_disagreement_flags_the_equation(page):
     assert not r.by_agreement                              # a text-layer match keeps the old threshold
 
 
+class Watched(Stub):
+    """Records the deadline each reading was given."""
+
+    def __init__(self, readings):
+        super().__init__(readings)
+        self.seen = []
+
+    def recognize(self, img, hint=""):
+        self.seen.append(self.deadline)
+        return super().recognize(img, hint)
+
+
 def test_region_time_budget_stops_further_scales(page, monkeypatch):
-    eng = Stub([A, B, A2])
+    eng = Watched([A, B, A2])
     ocr = EquationOCR(eng, cache=False)
     monkeypatch.setattr(ocr, "REGION_BUDGET", -1.0)         # the deadline has already passed
     r = ocr.recognize_region(page, RECT, "")
     assert eng.calls == 1 and r.latex == A                  # one reading, no retry at other scales
-    assert eng.deadline is not None
+    assert eng.seen[0] is not None and eng.deadline is None  # set while reading, cleared afterwards
+
+
+def test_the_region_deadline_does_not_reach_later_images(page):
+    # converter._inline_math reads inline symbols with recognize_image after the display equations:
+    # they must not inherit an equation's deadline, which may long have passed
+    eng = Watched([A, A2, B])
+    ocr = EquationOCR(eng, cache=False)
+    ocr.recognize_region(page, RECT, "")
+    img = mathocr.tight_crop(mathocr.render(page, RECT, 3.0))
+    assert ocr.recognize_image(img, "") == B
+    assert eng.seen[0] is not None and eng.seen[-1] is None
+
+
+def test_long_multi_row_readings_are_not_garbage():
+    # p2t reads a whole multi-row equation at once (three rows of paper-01 come to 666-814
+    # characters): the 600-character cap, made for rapid's one-row readings, holds per row
+    rows = ["+".join(r"\frac{a_{%d%d}}{b_{%d}}" % (k, i, i) for i in range(12)) for k in range(3)]
+    three = r"\begin{aligned}" + "\\\\".join(rows) + r"\end{aligned}"
+    assert all(len(r) == 255 for r in rows) and 600 < len(three) < 1200
+    assert not mathocr.looks_garbage(three)
+    assert mathocr.looks_garbage("".join(rows))             # as many characters on one row: too long
+
+
+def test_a_region_can_be_cropped_without_reading(page):
+    # --math-mode image drops the LaTeX anyway: the crop alone, no reading at any scale
+    eng = Stub([A, A2, B])
+    r = EquationOCR(eng, cache=False).recognize_region(page, RECT, "x = y + z", read=False)
+    assert eng.calls == 0 and r.latex is None and r.lines == 1 and r.image is not None
+
+
+def test_math_mode_image_does_not_read_display_equations(page, tmp_path):
+    from collections import Counter
+    from pdf2word.config import Options
+    from pdf2word.converter import Converter, _DocContext
+    for mode, reads in (("image", False), ("both", True)):
+        conv = Converter(Options(math_mode=mode))
+        eng = Stub([A, A2, B, A, A2, B])
+        conv._engine, conv._engine_built, conv._ocr = eng, True, EquationOCR(eng, cache=False)
+        ctx = _DocContext(page.parent, tmp_path, Counter(), conv)
+        ctx._consumed_labels = []
+        md = ctx._orphan_equation(page, RECT) + ctx._formula(page, {"bbox": tuple(RECT)}, "")
+        assert (eng.calls > 0) == reads, mode
+        assert "eq-u01" in md and "eq-u02" in md and ("$$" in md) == reads
+
+
+def test_the_saved_crop_is_rendered_at_the_display_scale(page, tmp_path):
+    # Markdown viewers draw the equation PNG at pixel size: 144 dpi whatever scales the engine reads
+    from collections import Counter
+    from PIL import Image
+    from pdf2word.config import Options
+    from pdf2word.converter import Converter, _DocContext
+    eng = Stub([A, A2])
+    ocr = EquationOCR(eng, cache=False)
+    r = ocr.recognize_region(page, RECT, "")
+    want = mathocr.tight_crop(mathocr.render(page, RECT, 2.0))
+    assert r.image.size == want.size and EquationOCR.DISPLAY_ZOOM == 2.0
+    conv = Converter(Options())
+    conv._engine, conv._engine_built, conv._ocr = eng, True, ocr
+    ctx = _DocContext(page.parent, tmp_path, Counter(), conv)
+    with Image.open(tmp_path / ctx._save_equation_image(r, None, page, RECT)) as im:
+        assert im.size == want.size and round(im.info["dpi"][0]) == 144
+    # nothing at the display scale (masked or faint): the 3x unmasked fallback says 216 dpi
+    with Image.open(tmp_path / ctx._save_equation_image(mathocr.EquationResult(None, None, 0), None,
+                                                        page, RECT)) as im:
+        assert im.size == mathocr.tight_crop(mathocr.render(page, RECT, 3.0)).size
+        assert round(im.info["dpi"][0]) == 216
+
+
+def _converter_reading(reading):
+    """A Converter whose engine reads every image as `reading` at every scale."""
+    from pdf2word.config import Options
+    from pdf2word.converter import Converter
+    conv = Converter(Options())
+    eng = Stub([reading] * 6)
+    conv._engine, conv._engine_built, conv._ocr = eng, True, EquationOCR(eng, cache=False)
+    return conv
+
+
+def test_a_word_badge_is_not_an_equation(tmp_path):
+    # a publisher badge (CrossMark, Check for updates) that reads as a word is not a display
+    # equation: drawn as vector outlines it is dropped, set as a picture it stays a picture
+    import io
+    from collections import Counter
+    from PIL import Image, ImageDraw
+    from pdf2word.converter import _DocContext
+    doc = pymupdf.open()
+    pg = doc.new_page(width=595, height=794)
+    pg.insert_text((60, 400), "Body text far away from the badges.", fontsize=10)
+    sh = pg.new_shape()                                       # an outlined word: nine glyph bars, 7 pt high
+    for i in range(9):
+        sh.draw_rect(pymupdf.Rect(480 + 4 * i, 186, 483 + 4 * i, 193))
+    sh.finish(fill=(0, 0, 0), color=None)
+    sh.commit()
+    img = Image.new("RGB", (480, 120), "white")              # a word badge set as a picture, no caption
+    ImageDraw.Draw(img).rectangle((1, 1, 478, 118), outline="black")
+    ImageDraw.Draw(img).text((10, 40), "Check for updates", fill="black")
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    pic = pymupdf.Rect(400, 100, 520, 130)
+    pg.insert_image(pic, stream=buf.getvalue())
+    drawn = pymupdf.Rect(478, 184, 518, 195)
+    box = {"class": "picture", "bbox": tuple(pic), "pos": (0, 0), "index": 0, "_text": ""}
+    boxes = [box, {"class": "text", "bbox": (55, 388, 300, 404), "pos": (0, 0), "_text": "Body text."}]
+    for reading, word in ((A, False), (r"\mathrm{CrossMark}", True), (r"\mathrm{Check~for~updates}", True)):
+        ctx = _DocContext(doc, tmp_path / str(word), Counter(), _converter_reading(reading))
+        ctx.asset_dir.mkdir(exist_ok=True)
+        ctx._consumed_labels = []
+        md = ctx._orphan_equation(pg, drawn)
+        assert (md == "") == word and ctx.stats["eq_total"] == ctx.stats["eq_drawn"] == (0 if word else 1), reading
+        md = ctx._picture(pg, box, "", boxes)
+        assert ("$$" in md) != word and ("p1-img1.png" in md) == word, reading
+        assert ctx.stats["figures"] == (1 if word else 0)
 
 
 def test_failed_calls_are_not_cached(page, tmp_path, monkeypatch):

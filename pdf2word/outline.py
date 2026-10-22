@@ -7,6 +7,7 @@ bookmarks, or a group of N pages when the PDF has no bookmarks.
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections import Counter
 from dataclasses import dataclass, field
 from typing import Optional
@@ -77,10 +78,9 @@ def _clean_title(title: str) -> str:
 
 
 def _page_height(doc, pno: int) -> float:
-    try:
-        return float(doc.page_cropbox(pno).height)
-    except Exception:
-        return float(doc[pno].rect.height)
+    """Height of the page as displayed (after /Rotate), the space bookmark y values live in and
+    the one start_y/end_y measure against; the unrotated cropbox would disagree on turned pages."""
+    return float(doc[pno].rect.height)
 
 
 def _outline_entries(doc) -> list:
@@ -93,33 +93,44 @@ def _outline_entries(doc) -> list:
     except Exception as exc:
         log.debug("outline unavailable: %s", exc)
         ol = None
-    if ol is not None:
-        stack = [(ol, 1)]
-        while stack:
-            item, lvl = stack.pop()
-            while item:
-                try:
-                    page = int(item.page)
-                    y = float(item.y) if item.y is not None else None
-                    if 0 <= page < doc.page_count:
-                        entries.append((lvl, _clean_title(item.title), page, y if y and y > 0 else None))
-                    down = item.down
-                except Exception:
-                    down = None
-                if down:
-                    # children must come right after their parent, before the next sibling
-                    stack.append((item.next, lvl))
-                    item, lvl = down, lvl + 1
-                    continue
-                item = item.next
+    # without bookmarks MuPDF hands back a wrapper around a NULL root: reading .down/.next of
+    # it crashes the interpreter (access violation), so stop here; get_toc() checks the same
+    if ol is None or getattr(getattr(ol, "this", None), "m_internal", None) is None:
         return entries
-    try:                                               # fallback: page numbers only
-        for item in doc.get_toc(simple=True):
-            lvl, title, page = int(item[0]), item[1], int(item[2])
-            if 1 <= page <= doc.page_count:
-                entries.append((max(1, lvl), _clean_title(title), page - 1, None))
-    except Exception as exc:
-        log.debug("outline unavailable: %s", exc)
+    stack = [(ol, 1)]
+    while stack:
+        item, lvl = stack.pop()
+        while item:
+            try:
+                page = int(item.page)
+                y = float(item.y) if item.y is not None else None
+                down = item.down
+                if 0 <= page < doc.page_count:
+                    # '/XYZ left 0 zoom' (PDF y 0 = page bottom) or below: no usable position
+                    y = y if y and 0 < y < _page_height(doc, page) - 1 else None
+                    entries.append((lvl, _clean_title(item.title), page, y))
+                elif down or not item.is_external:
+                    # no target (often a 'Part' title that only groups chapters): kept, so its
+                    # children stay below it instead of joining the previous entry; placed below
+                    entries.append((lvl, _clean_title(item.title), None, None))
+            except Exception:
+                down = None
+            if down:
+                # children must come right after their parent, before the next sibling
+                stack.append((item.next, lvl))
+                item, lvl = down, lvl + 1
+                continue
+            item = item.next
+    # an entry without a target starts where the next entry with one starts (usually its first
+    # child); with nothing after it, it has nothing to show and is dropped
+    nxt = None
+    for i in range(len(entries) - 1, -1, -1):
+        if entries[i][2] is not None:
+            nxt = entries[i][2:]
+        elif nxt is None:
+            del entries[i]
+        else:
+            entries[i] = entries[i][:2] + nxt
     return entries
 
 
@@ -168,7 +179,10 @@ def read_outline(doc) -> list:
             continue
         if nxt.page_from <= node.page_from:
             node.page_to = node.page_from
-            node.end_hint = (nxt.title, nxt.y_hint) if nxt.page_from == node.page_from and nxt.y_hint else None
+            # no end cut above the start: in two columns the next entry can sit higher up (an
+            # equal position stays: the headings found decide, part_document drops an empty cut)
+            below = nxt.y_hint and (node.y_hint is None or nxt.y_hint >= node.y_hint)
+            node.end_hint = (nxt.title, nxt.y_hint) if nxt.page_from == node.page_from and below else None
             continue
         if _starts_at_top(doc, nxt):
             node.page_to = nxt.page_from - 1
@@ -216,7 +230,8 @@ def format_tree(tree: list, depth: int = 2, numbers=None) -> str:
 
 
 def select_parts(tree: list, spec: str) -> list:
-    """'3,4.2,5.1-5.4', 'all' (top level), 'all:2' (every entry of depth 2) -> parts in document order."""
+    """'3,4.2,5.1-5.4', 'all' (top level), 'all:2' (every entry of depth 2) -> parts in document order.
+    A spec that selects nothing ('3-1', 'all:9') is an error, never "the whole PDF"."""
     nodes = flatten(tree)
     by_id = {n.id: n for n in nodes}
     wanted: list = []
@@ -226,7 +241,10 @@ def select_parts(tree: list, spec: str) -> list:
         m = re.fullmatch(r"all(?::(\d+))?", token, re.I)
         if m:
             depth = int(m.group(1) or 1)
-            wanted += [n for n in nodes if n.level == depth]
+            level = [n for n in nodes if n.level == depth]
+            if not level:
+                raise ValueError(f"no entry at depth {depth}: {token} (use --list-chapters)")
+            wanted += level
             continue
         m = re.fullmatch(r"([\d.]+)-([\d.]+)", token)
         if m:
@@ -236,6 +254,8 @@ def select_parts(tree: list, spec: str) -> list:
                 raise ValueError(f"chapter range must stay within one parent: {token}")
             prefix = (pa[0] + ".") if len(pa) == 2 else ""
             lo, hi = int(pa[-1]), int(pb[-1])
+            if lo > hi:
+                raise ValueError(f"reversed chapter range: {token}")
             for i in range(lo, hi + 1):
                 node = by_id.get(f"{prefix}{i}")
                 if node is None:
@@ -246,6 +266,8 @@ def select_parts(tree: list, spec: str) -> list:
         if node is None:
             raise ValueError(f"unknown chapter id: {token} (use --list-chapters)")
         wanted.append(node)
+    if (spec or "").strip() and not wanted:
+        raise ValueError(f"no chapter selected by: {spec!r} (use --list-chapters)")
     order = {id(n): i for i, n in enumerate(nodes)}
     uniq = {id(n): n for n in wanted}
     return sorted(uniq.values(), key=lambda n: order[id(n)])
@@ -296,6 +318,7 @@ class PageNumbers:
             if self.offset is not None:
                 self.source = "printed"
         self._index: Optional[dict] = None
+        self._index_lower: dict = {}
 
     # ---- lookup ---------------------------------------------------------------
     def label(self, pno: int) -> str:
@@ -332,14 +355,19 @@ class PageNumbers:
         return f"{a}-{b}" if page_to > page_from else a
 
     def index_of(self, printed: str) -> Optional[int]:
-        """0-based page of a printed number ('201', 'xii'); the first page carrying it."""
+        """0-based page of a printed number ('201', 'xii', 'S2'); the first page carrying it.
+        The label as written wins ('II' vs 'ii' in one book); any case is the fallback."""
         if self._index is None:
             self._index = {}
             for pno in range(self.count):
                 lab = self.label(pno)
-                if lab and lab not in self._index:
-                    self._index[lab] = pno
-        return self._index.get(printed.strip().lower()) if printed else None
+                if lab:
+                    self._index.setdefault(lab, pno)
+                    self._index_lower.setdefault(lab.lower(), pno)
+        if not printed:
+            return None
+        q = printed.strip()
+        return self._index.get(q, self._index_lower.get(q.lower()))
 
     # ---- heuristics --------------------------------------------------------------
     def _guess_offset(self) -> Optional[int]:
@@ -403,6 +431,8 @@ def parse_pages(spec: Optional[str], doc, numbers: Optional[PageNumbers] = None)
         pages += [p for p in range(min(a, b), max(a, b) + 1) if p not in pages]
     if plain:
         pages += [p for p in (parse_page_range(",".join(plain), doc.page_count) or []) if p not in pages]
+        if not pages:
+            raise ValueError(f"no page in range: {spec} (the PDF has {doc.page_count} pages)")
     return sorted(pages) or None
 
 
@@ -422,7 +452,9 @@ def page_groups(page_count: int, size: int) -> list:
 # ----------------------------------------------------------------------------- cutting
 
 def _norm(s: str) -> str:
-    return _NORM_RE.sub("", (s or "").lower())
+    """Comparison key for headings: NFKC first, so ligatures from the text layer (U+FB01 'fi')
+    and full-width forms match the bookmark title; Hangul stays composed."""
+    return _NORM_RE.sub("", unicodedata.normalize("NFKC", s or "").lower())
 
 
 def _text_lines(page) -> list:
@@ -462,6 +494,34 @@ def find_heading_y(page, title: str, hint_y: Optional[float]) -> Optional[float]
     return best
 
 
+def _lost(lines: list, start: float, end: float) -> float:
+    """How deep the cuts run into lines that both parts remove: the part above is cut away
+    below `end`, the part below above `start` (same page)."""
+    return sum(min(start - a, b - end) for a, b, _ in lines if a < start and b > end)
+
+
+def _snap_cut(page, y: float, end: bool) -> float:
+    """A cut through a text line moves to the edge of that line. Redaction drops a line once
+    the cut overlaps it by ~1.6 pt, so a line under the cut was lost from both parts. The line
+    goes to the side holding most of it; the part above then ends at the bottom of the last
+    line it keeps (`end`), the part below starts at the top of the first line it keeps. Line
+    boxes overlap at normal leading, so these two cuts differ by that overlap. A move that
+    would cut deeper into the text (another column) is not made."""
+    lines = _text_lines(page)
+    for i, (a, b, _) in enumerate(lines):
+        if a < y < b:
+            if y - a < b - y:                          # upper half: the line goes below the cut
+                upper, lower = (lines[i - 1] if i else None), lines[i]
+            else:                                      # lower half: the line stays above it
+                upper, lower = lines[i], (lines[i + 1] if i + 1 < len(lines) else None)
+            above = upper[1] if upper else lower[0] - 1      # end of the part above
+            below = lower[0] if lower else upper[1] + 1      # start of the part below
+            if _lost(lines, below, above) > _lost(lines, y, y):
+                return y
+            return above if end else below
+    return y
+
+
 def start_y(doc, part: Part) -> Optional[float]:
     """Where the part begins on its first page (top-left y), None when it owns the whole page."""
     if part.y_hint is None:
@@ -470,7 +530,7 @@ def start_y(doc, part: Part) -> Optional[float]:
     if part.y_hint <= TOP_FRACTION * page.rect.height:
         return None
     y = find_heading_y(page, part.title, part.y_hint)
-    return max(0.0, (y if y is not None else part.y_hint) - 2)
+    return _snap_cut(page, max(0.0, (y if y is not None else part.y_hint) - 2), end=False)
 
 
 def end_y(doc, part: Part) -> Optional[float]:
@@ -483,7 +543,7 @@ def end_y(doc, part: Part) -> Optional[float]:
     y = (y if y is not None else hint)
     if y is None or y <= TOP_FRACTION * page.rect.height:
         return None
-    return max(0.0, y - 2)
+    return _snap_cut(page, max(0.0, y - 2), end=True)
 
 
 def _redact(page, rect: pymupdf.Rect) -> None:
@@ -504,6 +564,8 @@ def part_document(doc, part: Part, cut: str = "exact") -> pymupdf.Document:
         return sub
     y0 = start_y(doc, part)
     y1 = end_y(doc, part)
+    if y0 is not None and y1 is not None and part.page_from == part.page_to and y1 <= y0 + 2:
+        y1 = None                    # the end would cut away the whole part: keep the page's rest
     if y0 is not None:
         first = sub[0]
         _redact(first, pymupdf.Rect(0, 0, first.rect.width, y0))

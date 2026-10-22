@@ -1,8 +1,74 @@
 # 전체 코드 검토 2026-10-22 — 발견 목록과 진행 상태
 
-- 상태: 진행 중 — 사용자가 다른 PC에서 이어감 (이 PC의 워크플로는 2026-10-23 06:07 중단; 코드 수정은 아직 없음)
+- 상태: 수정됨 (2026-10-23, 이 PC에서 완료)
 - 만든 스킬: (워크플로) 모듈별 검토 13 + 미사용 코드 탐색 + 프로파일 + 1쪽 로고 추적 → 발견 건별 반박 검증 → 파일별 수정 → pytest → 회귀 → 문서
 - 기준 커밋: f3d811b (p2t 엔진 작업 포함). 이 기록은 그 커밋 위에서 할 일의 목록이다.
+
+## 결과 (2026-10-23)
+
+이 PC에서 반박 검증 → 파일별 수정 → pytest → 회귀 → 문서까지 마쳤다(코드 수정은 브랜치 `claude/model-routing`에 미커밋).
+검증 근거는 세션 스크래치의 `verify/<묶음>/verdicts.md` 9개(metadata, docx_out, obsidian, outline, bench, converter, gui_tests,
+inline_vec, lighten_utils)에 있다.
+
+### 판정 집계
+- 확인된 발견 20건: 모두 수정.
+- 미검증 111건(verdicts.md 기준): confirmed 100 / partial 6 (#7 #42 #89 #124 #126 #129) / 다른 건에 포함 3 (#4→#102,
+  #105→#94, #111→#93) / rejected 2 (#127 #130). confirmed 중 #14는 #71과 같은 결함이라 함께 고쳤고, #75는 기준 커밋 뒤
+  HEAD에서 문서가 이미 고쳐져 있었다.
+- 최종 처리: 기각 3 (#126 #127 #130; #126은 partial이었으나 수정안이 #94를 무력화해 기각으로 돌림), 보류는 아래
+  "구현하지 않은 것", 문서만 고친 것 #124(`docs/decisions/math-engine-pix2text.md`), 나머지는 아래 파일별 목록대로 수정.
+
+### 파일별로 고친 발견
+- `pdf2word/inlinemath.py`: #52 #53 #54 #55 #56 #57
+- `pdf2word/vectormath.py`: #94(#105) #107 #108 #122
+- `pdf2word/outline.py`: #58 #59 #60 #61 #62 #63 #65 #66 #67 #68 #69 #98 #114 #115
+- `pdf2word/utils.py`: #64 #112(`fold_ascii`), #119, 새 `wiki_safe_name`(#89 #113, converter가 자산 폴더 이름에 씀)
+- `pdf2word/mathocr.py`: #18 #71(#14) #72 #76 #77 #78 #79 #96 #97 #101, `OCRCache.VERSION` 2→3
+- `pdf2word/converter.py`: #93(#111) #95 #96 #99 #100 #101 #102(#4) #103 #104 #106 #120 #123 #128
+- `pdf2word/docx_out.py`: #2 #5 #44 #45 #46 #47 #48 #49 #50 #51
+- `pdf2word/obsidian.py`: #80 #81 #82 #83 #84 #85 #86 #87 #88 #90 #91
+- `pdf2word/metadata.py`: #1 #32 #33 #34 #35 #36 #37 #38 #39 #40 #41 #43, #125(Session 재사용만)
+- `pdf2word/mfr_onnx.py`: #70 #73 #74
+- `pdf2word/lighten.py`: #109 #110 / `symbols.py`: #0 / `config.py`: #6 / `__init__.py`: #121 / `cli.py`: #118, 빈 `--chapters`(#115)
+- `main_gui.py`: #8(#117) #9 #10 #11 #12 #13
+- `tools/bench_mathocr.py`: #3 #22 #23 #24 #26 #27 #28 #29 #30
+- 테스트: #15 #16 #17 #19 #20 #21. 수정마다 합성 테스트를 붙였고 새 파일 9개(test_assets, test_chapters, test_cli, test_gui,
+  test_inlinemath, test_lighten, test_metadata, test_obsidian, test_utils)를 더해 pytest 63 → 222개.
+
+### 구현하지 않은 것
+- 보류
+  - #25 #31: `tools/bench_mathocr.py`가 converter의 레이아웃 호출과 `_formula` 분류를 중복 구현해 이미 두 곳이 어긋남.
+    합치는 방식은 ② 진단이 필요하다.
+  - #116: `symbols.map_pua`가 Word의 Wingdings PUA 글머리를 Symbol 글자로 바꿈. symbols·converter·inlinemath에 걸친 정책 결정이 필요하다.
+  - #42 #92: metadata·obsidian의 합자 표 중복. `symbols.py`로 합치는 리팩터는 선택 사항이다.
+  - #129: docx용 PNG를 두 번 엶. 절감이 0.1% 미만이다.
+  - #7: `Options.chapter_depth`는 읽는 곳이 없지만 CLI 옵션 `--chapter-depth`의 짝이라 지울 dead code가 아니다.
+  - #105의 남은 경우: 웹 링크가 없는 흰 프레임 배지는 여전히 수식이 될 수 있다(#94는 링크 아래 묶음만 거름).
+  - #115의 API 경로: `Options(chapters=" ")`는 여전히 전체 변환한다(CLI·GUI는 막음).
+  - #125: 변환당 `requests.Session` 재사용만 넣었다. 디스크 캐시와 옵션은 넣지 않았다.
+- 기각 (아래 "반박 검증에서 기각된 발견"에 근거)
+  - #126: 낭비는 실측되지만 수정안 `links=False`는 부분 문서의 URI 링크를 없애 #94의 CrossMark 필터를 무력화한다.
+  - #127: 순서를 바꿔도 결과는 같지만 절감이 30쪽에 96 ms로 실제 p2t 변환 시간의 0.1% 미만이다.
+  - #130: `get_text(textpage=)`가 clip을 무시해 TextPage를 공유하려면 MuPDF의 글자 포함 규칙을 다시 짜야 하고, 비용(6쪽 약 0.15 s)은 수식 하나 판독보다 작다.
+
+### 검증
+- pytest: 222 passed(수정 전 63). `main_gui.bat` 변경 없음.
+- `docs/issues/garbled-text-layer.md` 검증 샘플(paper-01 p2) 5개 모두 일치, ⚠ 0건.
+- paper-01 1–4쪽 md·docx를 수정 전(f3d811b)과 비교: 본문 줄·`\tag{N}`·`^eq-N`·docx 문단 동일. 차이는 셋뿐이고 모두 의도된 것 —
+  (a) CrossMark 배지가 만들던 가짜 수식 `eq-u01.png`과 그 "⚠ OCR 신뢰도 낮음 (69%)" 줄이 사라짐(#94; equations 6→5, docx 그림 13→12),
+  (b) `## a b s t r a c t` 제목이 `> [!abstract] Abstract` 콜아웃으로 바뀌고 초록 문단이 콜아웃 안에 들어감(#86),
+  (c) 키워드가 1개에서 6개 전부로(#33; frontmatter와 docx "Keywords:" 문단).
+- `tools/bench_mathocr.py docs/paper-01.pdf --pages 2 --engines p2t`: 수정 전후 모두 golden exact 3/4, golden sim 0.981, 5/5 recognized.
+
+### 남은 틈
+- GUI에서 분할 PDF의 뒤쪽 파트가 SystemExit로 멈추면 앞 파트는 이미 써졌지만 완료 집계에 들지 않는다(#9).
+- `Options(chapters=" ")`(API 직접 호출)는 여전히 전체 변환한다(#115).
+- `_DOUBTFUL_EQ`/`_DOUBTFUL`에서 `underline{{` 패턴을 뺐으므로 rapid의 `\underline{{{\bf\Psi}}}` 오독은 더는 의심 판정되지 않는다(#107).
+
+### 사용자가 GUI에서 직접 확인할 것
+1. 버전 표시 없는 예전 `gui.json`(엔진 rapid)이 있는 PC에서 첫 실행 때 엔진이 `p2t`로 표시되고, rapid로 바꾸면 다음 실행에도 유지되는지(#11).
+2. 추가 옵션 `--chapters 1,2`로 챕터마다 파일이 생기는지, `--list-chapters`는 안내 후 거절되는지(#8).
+3. 추가 옵션 `--title "unbalanced`(짝 없는 따옴표)가 대화상자로 알려지는지(#10).
 
 ## 진행 규칙
 - 수정은 확인(confirmed)된 건만. 미검증 건은 먼저 재현 스크립트(합성 데이터)로 반박을 시도하고, 못 반박한 것만 고친다.
@@ -498,8 +564,18 @@
 
 - #131 pdf2word/mathocr.py:695 — Equation region is rendered twice at the first scale (base crop, then first reading)
   - 기각 이유: The duplicate render is real but costs almost nothing. I counted renders by wrapping mathocr.render around recognize_region, with a stub engine using p2t's flags and zooms (4,3,2) (f131_results.json). Every case renders the region exactly twice at zoom 4 with the same rect and mask: once for `base` (mathocr.py:695, max(zooms[0], 2) = 4) and once for the first _read (mathocr.py:757). That held when two scales agree (3 renders, 1 duplicate), when the text layer matches at 4x (2 renders, 1 duplicat
+- #126 pdf2word/converter.py:172 — _subdoc and part_document copy link annotations that nothing reads
+  - 기각 이유: 낭비는 실측된다(named dest 3000개 원본에서 `--pages 1-6` 부분 문서 만들 때 원본 쪽 로드 3012회·151 ms, `links=False`면 0회).
+    그러나 수정안 `links=False`는 부분 문서의 URI 링크까지 없애 #94의 CrossMark 필터(웹 링크 아래 묶음 제외)가 작동하지 않고 배지가
+    다시 `$$…$$`가 된다. resolve_names는 원본 Document에 캐시되어 변환 한 번(챕터 여러 개라도)에 1회 비용이다.
+- #127 pdf2word/converter.py:860 — _inline_math extracts the box's text dict before checking whether any image can be inside the box
+  - 기각 이유: 낭비는 사실이고 순서를 바꿔도 결과는 같지만(전체 변환 Markdown 동일), 절감이 30쪽 151회에 96 ms로 OCR 없는 합성 변환의
+    약 1.8%, 실제 p2t 변환(쪽당 수 초)에서는 0.1% 미만이다.
+- #130 pdf2word/inlinemath.py:145 — One TextPage per layout box: 132 TextPages built for 6 pages
+  - 기각 이유: `page.get_text(..., textpage=tp)`는 clip을 무시하므로(pymupdf docstring) TextPage를 공유하려면 MuPDF의 글자 포함 규칙을
+    Python으로 다시 구현해야 한다. 비용은 6쪽에 약 0.15 s로 수식 하나의 p2t 판독(중앙값 5.2 s)보다 작다. 검토자 권고도 "No action".
 
-## 다른 PC에서 이어가는 순서 (2026-10-23 06:07, 사용자 요청으로 이 PC의 워크플로 중단)
+## 다른 PC에서 이어가는 순서 (2026-10-23 06:07, 사용자 요청으로 이 PC의 워크플로 중단) (완료)
 
 1. 기준 결과 만들기(코드 수정 전에!): f3d811b 상태에서 `python main_gui.py <논문.pdf> --pages 1-4 -f md -o <기준폴더> -v`와 `-f docx`를
    돌려 둔다. 수정 뒤 같은 명령으로 다시 변환해 본문 줄·`\tag{N}`·`^eq-N`·이미지 목록이 같은지 비교한다(본문 텍스트 보존 규칙).

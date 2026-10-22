@@ -20,16 +20,17 @@ accents, sub/superscripts and symbols. This is the one measurement that does not
 PDF's text layer (docs/decisions/equation-ocr-reliability.md).
 
 Confidence = similarity of the result to the PDF text layer of the region (mathocr.hint_similarity),
-or, when the text layer is garbled (Type 1 private encodings), the agreement between render scales,
-exactly as the converter does. The OCR cache is bypassed so that the times are real.
+or, when the text layer is garbled (Type 1 private encodings) or missing, the agreement between render
+scales (multi-scale engines); a doubtful reading of a region without any text layer is capped at 0.5
+(vectormath.doubtful_equation) - exactly as the converter does. A result is uncertain below
+CONFIDENCE_LOW (text-layer similarity) or AGREE_LOW (agreement). The OCR cache is bypassed so that the
+times are real.
 """
 from __future__ import annotations
 
 import argparse
-import difflib
 import html
 import json
-import logging
 import statistics
 import sys
 import time
@@ -39,16 +40,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import pymupdf  # noqa: E402
 
-from pdf2word.mathocr import (CONFIDENCE_LOW, LABEL_RE, EquationOCR, build_engine, find_labels,  # noqa: E402
-                              hint_usable, label_text, normalize_latex, png_bytes)
+from pdf2word.mathocr import (AGREE_LOW, CONFIDENCE_LOW, LABEL_RE, EquationOCR, agreement,  # noqa: E402
+                              build_engine, find_labels, hint_usable, label_text, normalize_latex,  # noqa: F401
+                              png_bytes)                       # normalize_latex: for tests/test_bench.py
 from pdf2word.outline import parse_pages  # noqa: E402
 from pdf2word.symbols import map_pua  # noqa: E402
-from pdf2word.utils import setup_logging  # noqa: E402
+from pdf2word.utils import setup_console, setup_logging  # noqa: E402
+from pdf2word.vectormath import doubtful_equation  # noqa: E402
 
-log = logging.getLogger("pdf2word")
 GOLDEN_NOTE = ("Open report.html, correct 'latex' of each equation against the original crop and set "
                "'verified': true. Only verified entries are scored; 'verified': false entries are the "
-               "engine's own output, kept as a starting point.")
+               "engine's own output, kept as a starting point. An entry is matched by page, label and k; "
+               "k (0, 1, ...) counts the equations with the same page and label in page order, which "
+               "tells apart the unnumbered equations of one page.")
 
 
 # ----------------------------------------------------------------------------- equation regions
@@ -65,8 +69,10 @@ def equation_regions(doc: pymupdf.Document, pages=None, lighten: bool = True) ->
     layout_doc = doc
     if lighten:
         layout_doc, _ = lighten_document(doc, dpi=200)
+    # use_ocr=False as in the converter (Options.ocr_pages): no Tesseract probe, no page OCR
     chunks = pymupdf4llm.to_markdown(layout_doc, pages=pages, page_chunks=True, write_images=False,
-                                     header=False, footer=False, force_text=True, show_progress=False)
+                                     header=False, footer=False, use_ocr=False, force_text=True,
+                                     show_progress=False)
     if isinstance(chunks, str):
         raise SystemExit("PyMuPDF Layout is not available: pip install pymupdf-layout")
     out = []
@@ -102,6 +108,9 @@ def build_engines(names: list, args) -> dict:
         if eng is None:
             print(f"[skip] {name}: no OCR engine")
             continue
+        if eng.name != name.lower():                  # p2t without its model comes back as rapid
+            print(f"[skip] {name}: model not available, fell back to {eng.name}")
+            continue
         engines[name] = eng
     return engines
 
@@ -122,6 +131,8 @@ def run(doc, regions, engines: dict, zooms, out_dir: Path, warmup: bool = True) 
             if warmup and idx == 1:
                 ocr.recognize_region(page, region, hint, mask)     # model load / first-call overhead
             result = ocr.recognize_region(page, region, hint, mask)
+            if not hint and not garbled and doubtful_equation(result.latex):
+                result.confidence = min(result.confidence, 0.5)    # as _DocContext._format_equation does
             if result.image is not None and not crop_saved:
                 fname = out_dir / f"{tag}.png"
                 fname.write_bytes(png_bytes(result.image))
@@ -144,16 +155,41 @@ def is_uncertain(entry: dict) -> bool:
     return bool(entry.get("uncertain", entry.get("confidence", 1.0) < CONFIDENCE_LOW))
 
 
-def golden_key(page, label) -> tuple:
-    return int(page), str(label or "")
+def golden_key(page, label, k=0) -> tuple:
+    """(page, label, k): k tells apart equations with the same page and label (the unnumbered
+    ones of a page); a golden.json written before k existed has none, which reads as 0."""
+    return int(page), str(label or ""), int(k or 0)
+
+
+def golden_ordinals(rows: list) -> list:
+    """k of each row: how many rows before it have the same (page, label). Counted within a
+    page, so --pages and --limit do not change it; never stored, so older results.json files
+    can be re-scored."""
+    seen: dict = {}
+    out = []
+    for r in rows:
+        pl = (int(r["page"]), str(r["label"] or ""))
+        out.append(seen.get(pl, 0))
+        seen[pl] = out[-1] + 1
+    return out
 
 
 def load_golden(path: Path) -> dict:
-    """{(page, label): entry} for every entry of golden.json; entry['verified'] says whether it
-    is scored."""
+    """{(page, label, k): entry} for every entry of golden.json; entry['verified'] says whether
+    it is scored. Two entries with the same key are refused (one would silently replace the
+    other)."""
     data = json.loads(path.read_text(encoding="utf-8"))
     entries = data["equations"] if isinstance(data, dict) else data
-    return {golden_key(e["page"], e.get("label")): e for e in entries}
+    golden, dup = {}, []
+    for e in entries:
+        key = golden_key(e["page"], e.get("label"), e.get("k", 0))
+        if key in golden:
+            dup.append(key)
+        golden[key] = e
+    if dup:
+        raise SystemExit(f"{path}: several entries for (page, label, k) {', '.join(map(str, dup))} - "
+                         "give the equations with the same page and label \"k\": 0, 1, ... in page order")
+    return golden
 
 
 def write_golden_skeleton(path: Path, pdf: Path, rows: list, engine: str) -> None:
@@ -161,8 +197,9 @@ def write_golden_skeleton(path: Path, pdf: Path, rows: list, engine: str) -> Non
     Never overwrites an existing file (that is the person's work)."""
     if path.exists():
         raise SystemExit(f"{path} exists - delete it or pass --rewrite-golden to start over")
-    entries = [{"page": r["page"], "label": r["label"], "verified": False,
-                "latex": (r["engines"].get(engine) or {}).get("latex") or ""} for r in rows]
+    entries = [{"page": r["page"], "label": r["label"], "k": k, "verified": False,
+                "latex": (r["engines"].get(engine) or {}).get("latex") or ""}
+               for r, k in zip(rows, golden_ordinals(rows))]
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"pdf": pdf.name, "note": GOLDEN_NOTE, "equations": entries},
                                ensure_ascii=False, indent=1), encoding="utf-8")
@@ -174,11 +211,12 @@ def score_against_golden(rows: list, golden: dict) -> dict:
     each scored engine entry gets 'golden_exact' and 'golden_sim'. Pure: used by the tests."""
     names = sorted({n for r in rows for n in r["engines"]})
     scored = {n: {"compared": 0, "exact": 0, "sims": []} for n in names}
-    for r in rows:
+    for r, k in zip(rows, golden_ordinals(rows)):
         for e in r["engines"].values():                # scores of a previous run
             e.pop("golden_sim", None)
             e.pop("golden_exact", None)
-        g = golden.get(golden_key(r["page"], r["label"]))
+        r["golden_k"] = k
+        g = golden.get(golden_key(r["page"], r["label"], k))
         if not g:
             r["golden_status"] = "missing"
             continue
@@ -186,15 +224,13 @@ def score_against_golden(rows: list, golden: dict) -> dict:
             r["golden_status"] = "unverified"
             continue
         r["golden_status"] = "verified"
-        want = normalize_latex(g["latex"])
         for n in names:
             e = r["engines"].get(n)
             if not e:
                 continue
-            got = normalize_latex(e["latex"] or "")
-            sim = difflib.SequenceMatcher(None, want, got, autojunk=False).ratio() if want else 0.0
+            sim = agreement(g["latex"], e["latex"] or "")      # normalize_latex, then similarity
             e["golden_sim"] = round(sim, 3)
-            e["golden_exact"] = bool(want) and want == got
+            e["golden_exact"] = sim == 1.0
             s = scored[n]
             s["compared"] += 1
             s["exact"] += int(e["golden_exact"])
@@ -232,12 +268,17 @@ def summarize(rows: list) -> dict:
 def _layer_note(r: dict) -> str:
     if r["text_layer_garbled"]:
         return "text layer: garbled (not used; confidence = agreement between render scales)"
-    return f"text layer: `{r['hint'][:200]}`" if r["hint"] else "text layer: none"
+    if r["hint"]:
+        return f"text layer: `{r['hint'][:200]}`"
+    return "text layer: none (multi-scale engines: confidence = agreement between render scales)"
 
 
 def _golden_note(r: dict) -> str:
     st = r.get("golden_status")
+    k = r.get("golden_k", 0)
     key = f'golden.json entry page {r["page"]}, label "{r["label"] or ""}"'
+    if k or not r["label"]:
+        key += f", k {k}"
     if st == "verified":
         return f"golden: verified ({key})"
     if st == "unverified":
@@ -248,8 +289,9 @@ def _golden_note(r: dict) -> str:
 def write_markdown(path: Path, pdf: Path, rows: list, summary: dict, golden_scores: dict) -> None:
     names = list(summary)
     lines = [f"# Equation OCR benchmark: {pdf.name}", "",
-             f"{len(rows)} display equation(s). Confidence = similarity to the PDF text layer, or agreement "
-             f"between render scales when the layer is garbled. Uncertain = confidence < {CONFIDENCE_LOW}.", "",
+             f"{len(rows)} display equation(s). Confidence = similarity to the PDF text layer, or, when the "
+             f"layer is garbled or missing, the agreement between render scales (multi-scale engines). "
+             f"Uncertain (⚠) = text-layer similarity < {CONFIDENCE_LOW} or agreement < {AGREE_LOW}.", "",
              "| engine | recognized | failed | uncertain | garbled layer | mean conf | median s/eq | total s |",
              "|---|---|---|---|---|---|---|---|"]
     for n in names:
@@ -304,8 +346,9 @@ def write_html(path: Path, pdf: Path, rows: list, summary: dict, golden_scores: 
     names = list(summary)
     n_unv = sum(1 for r in rows if r.get("golden_status") == "unverified")
     h = [_HTML_HEAD, f"<h1>Equation OCR benchmark: {html.escape(pdf.name)}</h1>",
-         f"<p>{len(rows)} display equation(s). Confidence = similarity to the PDF text layer, or agreement "
-         f"between render scales when the layer is garbled. Yellow = confidence &lt; {CONFIDENCE_LOW}, "
+         f"<p>{len(rows)} display equation(s). Confidence = similarity to the PDF text layer, or, when the "
+         f"layer is garbled or missing, the agreement between render scales (multi-scale engines). "
+         f"Yellow = text-layer similarity &lt; {CONFIDENCE_LOW} or agreement &lt; {AGREE_LOW}, "
          f"red = no result, green = exact match with golden.json.</p>",
          (f"<p class='todo'>{n_unv} equation(s) still unverified in golden.json (same folder as this file): "
           f"compare each result with its crop below, fix the LaTeX there and set \"verified\": true.</p>"
@@ -335,7 +378,7 @@ def write_html(path: Path, pdf: Path, rows: list, summary: dict, golden_scores: 
             latex = e.get("latex")
             cls = ("none" if not latex else "exact" if e.get("golden_exact")
                    else "low" if is_uncertain(e) else "")
-            body = f"$${latex}$$<hr><code>{html.escape(latex)}</code>" if latex else "<i>no result</i>"
+            body = f"$${html.escape(latex)}$$<hr><code>{html.escape(latex)}</code>" if latex else "<i>no result</i>"
             gold = f" · golden {e['golden_sim']:.2f}" if "golden_sim" in e else ""
             h.append(f"<td class='{cls}'>{body}<br><small>conf {e.get('confidence', 0):.2f} · "
                      f"{e.get('seconds', 0):.1f}s{gold}</small></td>")
@@ -377,6 +420,7 @@ def finish(out_dir: Path, golden_path: Path, pdf: Path, rows: list, summary: dic
 
 
 def main(argv=None) -> int:
+    setup_console()               # before any print: a label such as (2–3) on a cp949 stdout (as cli.main)
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument("pdf", type=Path)
     p.add_argument("--engines", default="p2t", help="comma list of math engines (p2t, rapid, claude)")
@@ -435,7 +479,8 @@ def main(argv=None) -> int:
     rows = run(doc, regions, engines, zooms, out_dir, warmup=not args.no_warmup)
     summary = summarize(rows)
     engines_meta = {n: getattr(e, "name", n) for n, e in engines.items()}
-    return finish(out_dir, golden_path, args.pdf, rows, summary, engines_meta, names[0], args.rewrite_golden)
+    return finish(out_dir, golden_path, args.pdf, rows, summary, engines_meta, next(iter(engines)),
+                  args.rewrite_golden)                # the skeleton from an engine that was built
 
 
 if __name__ == "__main__":

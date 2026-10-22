@@ -82,8 +82,10 @@
    - 러너: `onnxruntime` 세션 2개(CPU, 지연 로드), 전처리 RGB → 384×384 BICUBIC → float64로 1/255 → float32 →
      (x−0.5)/0.5 → CHW; 인코더 `pixel_values`→`last_hidden_state`; 디코더 입력 `input_ids`(int64)와
      `encoder_hidden_states`뿐, 출력 `logits`. 탐욕 디코딩: 시작 1, 종료 2, 상한 `mfr_onnx.MAX_TOKENS = 640`
-     (두 줄 식이 328 토큰; KV 캐시가 없어 길이의 제곱으로 느려지므로 1024는 쓰지 않음), 호출당 시간 예산 90 s, 짧은 주기
-     반복(`mfr_onnx._repeating`: 끝부분이 짧은 주기로 되풀이됨) 감지 시 중단. `tokenizers.Tokenizer.from_file`로 디코드(특수 토큰 제외).
+     (두 줄 식이 328 토큰; KV 캐시가 없어 길이의 제곱으로 느려지므로 1024는 쓰지 않음), 호출당 시간 예산 90 s, 디코더
+     루프 감지 시 중단(`mfr_onnx._repeating`: 끝부분이 1~8 토큰 주기로 32 토큰 이상·4회 이상 되풀이되면 루프, 주기에 따라 32~36
+     토큰에서 감지. 중첩 분수 끝의 ` }` 넷, `{cccc}`, `10000` 같은 정상 반복은 루프가 아니다 — 같은 토큰 4개만으로도 루프로 보던
+     32칸 창과 break를 코드 검토 #70에서 없앰). `tokenizers.Tokenizer.from_file`로 디코드(특수 토큰 제외).
    - 후처리(Pix2Text `post_process` 상당, 엔진 안에서): 토큰 사이 공백 제거(명령 뒤 글자가 오는 곳만 한 칸 유지),
      맨 앞의 군더더기 `^{…}`/`_{…}` 제거, 빈 그룹(`{}`, `^{}`, `\hat{}` …) 반복 제거, 끝의 간격 명령 제거,
      짝 없는 `\left`/`\right` 제거, `\cfrac`→`\frac`, `\operatorname*`→`\operatorname`, `\sf`·`\tt`·`\it` 글꼴 전환 제거,
@@ -150,8 +152,9 @@
 - **폴백**: 프록시로 다운로드를 막으면 "p2t 모델을 쓸 수 없어 rapid로 대체: …" 뒤 rapid로 변환 완료(23 s). 머리말의
   `math:` 표기가 요청 엔진이 아니라 실제 엔진을 적도록 `Converter.engine_name`을 고쳤다.
 - **남은 문제(엔진과 무관, 코드 검토 단계로 넘김)**: 1쪽 Elsevier CrossMark 로고가 식으로 잡혀 `eq-u01`로 출력된다
-  (p2t는 `\underbrace{…}\mathrm{CrossMark}`, rapid는 `\left({\frac…` 오독; 둘 다 `⚠` 없음). 벤치마크 로그의
-  `_readerthread` UnicodeDecodeError(서브프로세스 출력 디코딩, 결과 무관).
+  (p2t는 `\underbrace{…}\mathrm{CrossMark}`로 오독. 이 검증 실행에서는 `⚠`가 없었으나 2차 보강(`AGREE_LOW` 0.9) 뒤의 캐시된
+  p2t 판독은 배율 간 일치도 0.70으로 `⚠`가 붙었다 — 코드 검토 #124. 이제는 #94가 웹 링크 아래의 배지 묶음 자체를 걸러
+  출력되지 않는다). 벤치마크 로그의 `_readerthread` UnicodeDecodeError(서브프로세스 출력 디코딩, 결과 무관; #24로 해소).
 
 ## 판정 기준
 - **기본 엔진 자격**: paper-01 골든 셋(확정 4식)에서 `p2t`의 정규화 정확 일치 ≥ 2/4이고 평균 유사도가 rapid보다

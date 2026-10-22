@@ -49,6 +49,25 @@ def test_latex_hygiene():
     assert r"\partial" in out and r"\hat{Q}" not in out
 
 
+def test_hint_fixes_keeps_a_q_the_text_layer_shows():
+    # Q/dA (heat over area) is real when the text layer shows the Q
+    assert hint_fixes(r"\frac{Q}{dA}=q", "Q dA = q") == r"\frac{Q}{dA}=q"
+    assert hint_fixes(r"\frac{\mathrm{Q}}{\mathrm{d}A}=q", "Q dA = q") == r"\frac{\mathrm{Q}}{\mathrm{d}A}=q"
+    # a Q the text layer does not have is the misread d of d/dt, also next to a real Q
+    assert hint_fixes(r"\frac{Q x}{dt}=v", "dx dt = v") == r"\frac{d x}{dt}=v"
+    assert hint_fixes(r"\frac{Q x}{dt}=Q", "dx dt = Q") == r"\frac{d x}{dt}=Q"
+
+
+def test_fix_braces_does_not_count_arrows_as_sizing_commands():
+    # \rightarrow, \leftarrow ... are not \right / \left: a balanced reading keeps its sizes
+    for s in (r"\left(a\right)\rightarrow b", r"\left.\frac{dy}{dx}\right|_{x=0}\leftarrow y",
+              r"A\rightleftharpoons B\left[c\right]"):
+        assert fix_braces(s) == s
+    # an unbalanced one loses them, a null delimiter together with its dot (no stray '.')
+    assert fix_braces(r"x=\left.\frac{a}{b}\rightarrow c") == r"x=\frac{a}{b}\rightarrow c"
+    assert fix_braces(r"a=\left. x\right|_{0}\right)") == r"a= x|_{0})"
+
+
 def test_names():
     assert safe_name("_asset-Ma-2025") == "_asset-Ma-2025"
     assert safe_name('a<b>:"c"') == "a-b-c"
@@ -58,6 +77,28 @@ def test_names():
     assert parse_page_range("1-3,7", 10) == [0, 1, 2, 6]
     assert image_link("_asset-A-2020/fig1.png") == "![[_asset-A-2020/fig1.png]]"
     assert image_link("_asset-A 2020/fig1.png", "fig1", "markdown") == "![fig1](_asset-A%202020/fig1.png)"
+
+
+def test_subfigure_renames_reach_markdown_links():
+    # --image-links markdown URL-quotes the path: a Korean or '(1)' asset folder must still be renamed
+    import tempfile
+    from types import SimpleNamespace
+    from pdf2word.config import Options
+    from pdf2word.converter import _DocContext
+    for style in ("markdown", "wiki"):
+        with tempfile.TemporaryDirectory() as tmp:
+            assets = Path(tmp) / "_asset-김-2020-(1)"
+            assets.mkdir()
+            for n in ("fig3.png", "fig3a.png"):
+                (assets / n).write_text(n, encoding="utf-8")
+            ctx = SimpleNamespace(picture_names={"fig3": ["fig3.png", "fig3a.png"]}, asset_dir=assets,
+                                  opt=Options(image_links=style))
+
+            def links(*names):
+                return "\n\n".join(image_link(f"{assets.name}/{n}", "fig", style) for n in names)
+            assert _DocContext.finalize_subfigures(ctx, links("fig3.png", "fig3a.png")) == links("fig3a.png", "fig3b.png")
+            assert (assets / "fig3a.png").read_text(encoding="utf-8") == "fig3.png"
+            assert (assets / "fig3b.png").read_text(encoding="utf-8") == "fig3a.png"
 
 
 def test_math_block_spacing():
@@ -127,6 +168,11 @@ def test_inline_text_math_runs():
                (" ", PAL, 10, 4), ("as", PALI, 10, 6), ("12", PAL, 7, 5, -5), (" ", PAL, 10, 4), ("p", PALI, 10, 6),
                (" < 0.05", PAL, 10, 4))
     assert _latex(sp) == []
+    # Word/MathType: a prime or a radical typed into the letter's Symbol-font span stays inside $...$,
+    # a relation glued to it is still moved out
+    sp = _line(("where ", TNR, 11, 4), ("ψ′", SYM, 11, 0), (" and ", TNR, 11, 4), ("√ρ", SYM, 11, 0),
+               (" with ", TNR, 11, 4), ("ψ″=", SYM, 11, 0), (" is", TNR, 11, 4), body=11)
+    assert _latex(sp) == [r"\psi '", r"\sqrt \rho", r"\psi '' ="]
 
 
 def test_inline_text_math_replace():
@@ -175,6 +221,116 @@ def test_ocr_confidence_and_cleanups():
     md = "_Article_\n\n## Title\n\n**Martin Weers**<sup>**1,**</sup> **and Alfred Weber**<sup>**1**</sup>\n\n## 1. Intro\n"
     out = _clean_front_matter(md)                               # title may still be '##' at this stage
     assert "_Article_" not in out and "Martin Weers<sup>1,</sup> and Alfred Weber<sup>1</sup>" in out
+
+
+# ----------------------------------------------------------------------------- converter pipeline
+# (no pytest fixtures here: `python tests/test_basic.py` calls every test without arguments)
+
+def _pdf(pages: int = 1, image_px=None):
+    """A synthetic PDF; image_px=(w, h) puts a grey bitmap of that many pixels on every page."""
+    import pymupdf
+    doc = pymupdf.open()
+    for i in range(pages):
+        page = doc.new_page(width=595, height=794)
+        page.insert_text((60, 100), f"Body text of page {i + 1}.", fontsize=11)
+        if image_px:
+            pix = pymupdf.Pixmap(pymupdf.csGRAY, pymupdf.IRect(0, 0, *image_px), False)
+            pix.clear_with(90 + 40 * i)                          # a different bitmap on every page
+            page.insert_image(pymupdf.Rect(100, 200, 300, 350), pixmap=pix)
+    return doc
+
+
+def test_skip_message_names_an_existing_option():
+    # the CLI knows --no-overwrite only: the skip message must not send users to '--overwrite'
+    import logging
+    import tempfile
+    from pdf2word.config import Options
+    from pdf2word.converter import Converter
+    from pdf2word.metadata import PaperMeta
+    from pdf2word.utils import log
+    records = []
+    handler = logging.Handler()
+    handler.emit = lambda record: records.append(record.getMessage())
+    old_level = log.level
+    doc = _pdf()
+    with tempfile.TemporaryDirectory() as tmp:
+        (Path(tmp) / "x.docx").write_bytes(b"")
+        log.addHandler(handler)
+        log.setLevel(logging.INFO)
+        try:
+            res = Converter(Options(overwrite=False, out_dir=Path(tmp)))._run(
+                doc, Path(tmp) / "x.pdf", PaperMeta(), "document", "x", "_asset-x")
+        finally:
+            log.removeHandler(handler)
+            log.setLevel(old_level)
+            doc.close()
+    text = "\n".join(records)
+    assert res.skipped and "x.docx" in text
+    assert "--no-overwrite" in text and "use --overwrite" not in text
+
+
+def test_page_images_are_read_once_per_page():
+    # get_image_info(xrefs=True) decodes and hashes every bitmap: the logo scan's per-page lists
+    # are what _page_images returns later, not a second call
+    import tempfile
+    from collections import Counter
+    import pymupdf
+    from pdf2word.config import Options
+    from pdf2word.converter import Converter, _DocContext
+    doc = _pdf(3, image_px=(16, 16))
+    real = pymupdf.Page.get_image_info
+    calls = []
+
+    def counted(self, *a, **kw):
+        calls.append(self.number)
+        return real(self, *a, **kw)
+    pymupdf.Page.get_image_info = counted
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            ctx = _DocContext(doc, Path(tmp), Counter(), Converter(Options()))
+            got = [ctx._page_images(doc[p]) for p in range(doc.page_count)]
+    finally:
+        pymupdf.Page.get_image_info = real
+    assert sorted(calls) == [0, 1, 2]
+    assert got == [doc[p].get_image_info(xrefs=True) for p in range(doc.page_count)]
+    assert all(len(g) == 1 for g in got)
+    doc.close()
+
+
+def test_layout_doc_skips_lighten_for_ocr_pages():
+    # the lightened copy swaps big bitmaps for a blank stand-in: --ocr-pages must see the real pixels
+    from collections import Counter
+    from pdf2word.config import Options
+    from pdf2word.converter import Converter
+    doc = _pdf(1, image_px=(1200, 1000))                         # 1.2 MP: lighten replaces it
+    stats = Counter()
+    light = Converter(Options())._layout_doc(doc, stats)
+    assert light is not doc and "pages_lightened" in stats
+    light.close()
+    for opt in (Options(ocr_pages=True), Options(lighten=False)):
+        stats = Counter()
+        assert Converter(opt)._layout_doc(doc, stats) is doc and "pages_lightened" not in stats
+    doc.close()
+
+
+def test_chapters_selecting_nothing_is_an_error():
+    # '--chapters all:3' on a two-level outline, or ',', selects no entry: an error, not the whole PDF
+    import tempfile
+    from pdf2word.config import Options
+    from pdf2word.converter import Converter
+    doc = _pdf(4)
+    doc.set_toc([[1, "Chapter 1 Alpha", 1], [2, "1.1 Beta", 2], [1, "Chapter 2 Gamma", 3]])
+    with tempfile.TemporaryDirectory() as tmp:
+        pdf = Path(tmp) / "book.pdf"
+        doc.save(str(pdf))
+        doc.close()
+        for spec in ("all:3", ","):
+            try:
+                parts = Converter(Options(chapters=spec)).plan_parts(pdf)
+            except ValueError:
+                continue
+            raise AssertionError(f"--chapters {spec!r} gave {parts!r}")
+        assert [p.title for p in Converter(Options(chapters="all:2")).plan_parts(pdf)] == ["1.1 Beta"]
 
 
 if __name__ == "__main__":

@@ -11,7 +11,7 @@ PDF(논문·책·매뉴얼) → Word(.docx) 또는 Obsidian Markdown. 레이아�
   `main_gui.bat`는 가상환경을 3.12로만 만들고 받아들인다(uv가 없으면 설치해서 3.12를 내려받음).
 - 환경: `uv sync --locked --extra dev` (`.venv`, 3.12). 의존성을 바꾸면 `pyproject.toml`과 `requirements.txt`를
   같이 고치고 `uv lock`.
-- 테스트: `.venv\Scripts\python -m pytest tests -q` (57개, 모델·네트워크 불필요, 약 7초).
+- 테스트: `.venv\Scripts\python -m pytest tests -q` (222개, 모델·네트워크 불필요, 약 7초).
 - 실행: `.venv\Scripts\python main_gui.py` (GUI) / `... main_gui.py paper.pdf --pages 1-5 -f md -o out -v` (CLI).
   변환은 수 분 걸리므로 백그라운드로 돌리고 `-v` 로그 파일을 본다. 결과는 `out/`(gitignore)에.
 - GPU 없음. **torch 계열 의존성 금지**(CPU 전용). Word 수식 개체 변환은 Windows + Office에서만.

@@ -229,8 +229,10 @@ def fix_braces(s: str) -> str:
     if 0 < opened - closed <= 2:
         s += "}" * (opened - closed)
     # unmatched \left / \right make MathJax refuse the whole block: drop the sizing commands
-    if s.count(r"\left") != s.count(r"\right"):
-        s = re.sub(r"\\(left|right)(?=[\s(\[|.{\\)\]])", "", s)
+    # (\leftarrow, \rightarrow, \rightleftharpoons ... are not sizing commands; a null delimiter
+    # \left. / \right. goes together with its dot)
+    if len(re.findall(r"\\left(?![A-Za-z])", s)) != len(re.findall(r"\\right(?![A-Za-z])", s)):
+        s = re.sub(r"\\(?:left|right)(?:\s*\.|(?=[\s(\[|{\\)\]]))", "", s)
     return s
 
 
@@ -241,7 +243,9 @@ def environments_balanced(s: str) -> bool:
 
 
 def looks_garbage(s: str, max_len: int = 600) -> bool:
-    if not s or len(s) > max_len:
+    # the length cap is per row too: p2t reads a whole multi-row equation at once (three rows of
+    # paper-01 come to 666-814 characters) while rapid reads one row at a time
+    if not s or len(s) > max_len * (s.count("\\\\") + 1):
         return True
     if re.search(r"(.{4,30}?)(?:\1){4,}", s):            # runaway repetition
         return True
@@ -286,9 +290,10 @@ def hint_fixes(latex: str, hint: str) -> str:
                      lambda m: m.group(1) + r"\partial " + m.group(2) + _partial(m.group(3)), out)
         out = re.sub(rf"(\\frac\{{){acc}({inner}\}}\{{)\\partial ",
                      lambda m: m.group(1) + _partial(m.group(2)) + m.group(3) + r"\partial ", out)
-    # d/dt misread as Q/dt
-    out = re.sub(r"(\\frac\{)\\mathrm\{Q\}((?:[^{}]|\{[^{}]*\})*\}\{\\mathrm\{d\})", r"\1\\mathrm{d}\2", out)
-    out = re.sub(r"(\\frac\{)Q((?:[^{}]|\{[^{}]*\})*\}\{d[ \\a-zA-Z])", r"\1d\2", out)
+    # d/dt misread as Q/dt - only for a Q the text layer does not show (Q/dA with a Q in the layer is real)
+    if out.count("Q") > hint.count("Q"):
+        out = re.sub(r"(\\frac\{)\\mathrm\{Q\}((?:[^{}]|\{[^{}]*\})*\}\{\\mathrm\{d\})", r"\1\\mathrm{d}\2", out)
+        out = re.sub(r"(\\frac\{)Q((?:[^{}]|\{[^{}]*\})*\}\{d[ \\a-zA-Z])", r"\1d\2", out)
     if "\u2211" in hint and r"\sum" not in out:
         out = out.replace(r"\Sigma", r"\sum")
     if "\u2207" in hint and r"\nabla" not in out:
@@ -403,7 +408,8 @@ def pick_by_agreement(latexes: list, zooms=None) -> tuple:
 class OCRCache:
     def __init__(self, enabled: bool = True):
         self.enabled = enabled
-        self.path = cache_dir() / "mathocr-cache.json"
+        # disabled: no profile folder is created and no old pdf2obsidian cache copied (cache_dir does both)
+        self.path = cache_dir() / "mathocr-cache.json" if enabled else None
         self.data: dict = {}
         self.dirty = False
         if enabled and self.path.exists():
@@ -412,7 +418,7 @@ class OCRCache:
             except Exception:
                 self.data = {}
 
-    VERSION = "2"           # bump when clean-up rules change (invalidates old entries)
+    VERSION = "3"           # bump when clean-up rules change (invalidates old entries)
 
     @classmethod
     def key(cls, engine: str, png: bytes) -> str:
@@ -485,16 +491,15 @@ class Pix2TextEngine(MathEngine):
     multi_zoom = True
     default_zooms = (4.0, 3.0, 2.0)     # 4x (~300 dpi, what Pix2Text renders) was best, 2x worst (decision record)
 
-    def __init__(self, model_dir=None, runner=None):
-        self.model_dir = model_dir
-        self._runner = runner
+    def __init__(self):
+        self._runner = None
 
     def load(self) -> "Pix2TextEngine":
         """Fetch / verify the model files and open the sessions; raises when that fails."""
         if self._runner is None:
             from .mfr_onnx import MFRRunner
             log.info("  loading Pix2Text MFR model ...")
-            self._runner = MFRRunner(self.model_dir)
+            self._runner = MFRRunner()
         self._runner.load()
         return self
 
@@ -599,7 +604,7 @@ def build_engine(name: str, **kw) -> Optional[MathEngine]:
     if name in ("none", "off", "image"):
         return None
     if name == "p2t":
-        engine = Pix2TextEngine(model_dir=kw.get("model_dir"))
+        engine = Pix2TextEngine()
         try:
             return engine.load()
         except Exception as exc:
@@ -622,7 +627,6 @@ class EquationResult:
     latex: Optional[str]
     image: Optional[Image.Image]
     lines: int = 1
-    cached: bool = False
     seconds: float = 0.0
     confidence: float = 1.0      # similarity to the PDF text layer (1.0 = no text layer to compare)
     by_agreement: bool = False   # confidence is the agreement between render scales instead
@@ -635,6 +639,7 @@ class EquationResult:
 
 class EquationOCR:
     DEFAULT_ZOOMS = (2.0, 3.0, 4.0)
+    DISPLAY_ZOOM = 2.0           # scale of the saved crop (result.image, 144 dpi), whatever scales the engine reads
     REGION_BUDGET = 90.0         # seconds per equation over all render scales (p2t decodes slowly on long input)
 
     def __init__(self, engine: Optional[MathEngine], zooms=None,
@@ -645,7 +650,6 @@ class EquationOCR:
         self.zooms = tuple(float(z) for z in zooms)
         self.cache = OCRCache(cache)
         self.min_gap_pt = min_gap_pt
-        self.calls = 0
         self.cache_hits = 0
 
     # -- single image -------------------------------------------------------
@@ -659,7 +663,6 @@ class EquationOCR:
         if cached is not None:
             self.cache_hits += 1
             return hint_fixes(clean_latex(cached), hint) or None
-        self.calls += 1
         t0 = time.time()
         try:
             raw = self.engine.recognize(img, hint)
@@ -680,11 +683,12 @@ class EquationOCR:
         return latex or None
 
     # -- page region --------------------------------------------------------
-    def recognize_region(self, page: pymupdf.Page, rect, hint: str = "", mask=None) -> EquationResult:
+    def recognize_region(self, page: pymupdf.Page, rect, hint: str = "", mask=None,
+                         read: bool = True) -> EquationResult:
         """OCR of one display equation; `mask` lists page rectangles to paint out first (an
         equation number inside the region).
 
-        * no engine: the crop only.
+        * no engine, or read=False (--math-mode image drops the LaTeX): the crop only.
         * an engine that must not be called often (Claude): one reading at the first scale, a
           second one only when the first returns nothing; confidence = text-layer match.
         * a local engine: with a usable text layer the scales are tried in order until one
@@ -692,39 +696,42 @@ class EquationOCR:
           layer - docs/issues/garbled-text-layer.md) the scales are compared with each other."""
         t0 = time.time()
         rect = pymupdf.Rect(rect)
-        base = tight_crop(render(page, rect, max(self.zooms[0], 2.0), mask))
+        base = tight_crop(render(page, rect, self.DISPLAY_ZOOM, mask))
         if base is None:
             return EquationResult(None, None, 0)
-        if self.engine is None:
+        if self.engine is None or not read:
             return EquationResult(None, base, 1, seconds=time.time() - t0)
         self.engine.deadline = t0 + self.REGION_BUDGET
-        usable = hint_usable(hint)
-        if not self.engine.multi_zoom:
-            latex, n = self._read(page, rect, self.zooms[0], hint if usable else "", mask)
-            if latex is None and len(self.zooms) > 1:
-                latex, n = self._read(page, rect, self.zooms[1], hint if usable else "", mask)
-            conf = hint_similarity(latex, hint) if latex else 0.0
-            return EquationResult(latex, base, n or 1, seconds=time.time() - t0, confidence=conf)
-        if not usable:
-            return self._recognize_by_agreement(page, rect, base, t0, mask)
+        try:
+            usable = hint_usable(hint)
+            if not self.engine.multi_zoom:
+                latex, n = self._read(page, rect, self.zooms[0], hint if usable else "", mask)
+                if latex is None and len(self.zooms) > 1:
+                    latex, n = self._read(page, rect, self.zooms[1], hint if usable else "", mask)
+                conf = hint_similarity(latex, hint) if latex else 0.0
+                return EquationResult(latex, base, n or 1, seconds=time.time() - t0, confidence=conf)
+            if not usable:
+                return self._recognize_by_agreement(page, rect, base, t0, mask)
 
-        # the text layer says how good a reading is: a poor match is retried at the other
-        # render scales and the best-matching candidate wins
-        best_latex, best_conf, best_lines = None, -1.0, 0
-        for i, zoom in enumerate(self.zooms):
-            if i and time.time() > self.engine.deadline:     # always one reading, more while there is time
-                break
-            latex, n_lines = self._read(page, rect, zoom, hint, mask)
-            if not latex:
-                continue
-            conf = hint_similarity(latex, hint)
-            if conf > best_conf:
-                best_latex, best_conf, best_lines = latex, conf, n_lines
-            if conf >= CONFIDENCE_OK:
-                break
-        if best_latex is None:
-            return EquationResult(None, base, 0, seconds=time.time() - t0)
-        return EquationResult(best_latex, base, best_lines, seconds=time.time() - t0, confidence=best_conf)
+            # the text layer says how good a reading is: a poor match is retried at the other
+            # render scales and the best-matching candidate wins
+            best_latex, best_conf, best_lines = None, -1.0, 0
+            for i, zoom in enumerate(self.zooms):
+                if i and time.time() > self.engine.deadline:     # always one reading, more while there is time
+                    break
+                latex, n_lines = self._read(page, rect, zoom, hint, mask)
+                if not latex:
+                    continue
+                conf = hint_similarity(latex, hint)
+                if conf > best_conf:
+                    best_latex, best_conf, best_lines = latex, conf, n_lines
+                if conf >= CONFIDENCE_OK:
+                    break
+            if best_latex is None:
+                return EquationResult(None, base, 0, seconds=time.time() - t0)
+            return EquationResult(best_latex, base, best_lines, seconds=time.time() - t0, confidence=best_conf)
+        finally:
+            self.engine.deadline = None   # per equation: inline symbols read later must not inherit it
 
     def _recognize_by_agreement(self, page: pymupdf.Page, rect: pymupdf.Rect, base, t0: float,
                                 mask=None) -> EquationResult:

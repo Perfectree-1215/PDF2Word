@@ -26,6 +26,7 @@ MAX_TEXT_DENSITY = 0.35    # clusters with more text than this are paragraphs, n
 
 def cluster_rects(rects: list, gap: float = CLUSTER_GAP) -> list:
     """Union-find clustering: rects whose gap-expanded boxes intersect belong together.
+    A sweep over x skips pairs that cannot meet (heavy pages carry thousands of paths).
     Returns [(bbox, [member indices]), ...]."""
     n = len(rects)
     parent = list(range(n))
@@ -37,9 +38,14 @@ def cluster_rects(rects: list, gap: float = CLUSTER_GAP) -> list:
         return i
 
     expanded = [pymupdf.Rect(r) + (-gap, -gap, gap, gap) for r in rects]
-    for i in range(n):
-        for j in range(i + 1, n):
-            if expanded[i].intersects(expanded[j]):
+    order = sorted(range(n), key=lambda k: expanded[k].x0)
+    for a, i in enumerate(order):
+        ei = expanded[i]
+        for j in order[a + 1:]:
+            ej = expanded[j]
+            if ej.x0 > ei.x1:
+                break                          # sorted by x0: no later box reaches back to i
+            if ei.intersects(ej):
                 ri, rj = find(i), find(j)
                 if ri != rj:
                     parent[ri] = rj
@@ -146,9 +152,6 @@ def lighten_document(doc: pymupdf.Document, dpi: int = 72):
     n_big = shrink_big_images(light, big)
     if n_big:
         log.info("  %d large bitmap(s) replaced by stand-ins for layout analysis", n_big)
-    graphics_remove = getattr(pymupdf, "PDF_REDACT_LINE_REMOVE", 1)
-    text_keep = getattr(pymupdf, "PDF_REDACT_TEXT_NONE", 1)
-    image_remove = getattr(pymupdf, "PDF_REDACT_IMAGE_REMOVE", 1)
     changed = 0
     for pno, items in heavy.items():
         orig = doc[pno]
@@ -181,10 +184,9 @@ def lighten_document(doc: pymupdf.Document, dpi: int = 72):
             continue
         for bbox, _ in replacements:
             page.add_redact_annot(bbox)
-        try:
-            page.apply_redactions(images=image_remove, graphics=graphics_remove, text=text_keep)
-        except TypeError:                       # older PyMuPDF without `graphics`
-            page.apply_redactions(images=image_remove, text=text_keep)
+        page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_REMOVE,
+                              graphics=pymupdf.PDF_REDACT_LINE_ART_REMOVE_IF_COVERED,
+                              text=pymupdf.PDF_REDACT_TEXT_NONE)
         for bbox, pix in replacements:
             if pix is not None:
                 page.insert_image(bbox, pixmap=pix)

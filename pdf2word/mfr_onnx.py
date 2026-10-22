@@ -59,8 +59,8 @@ def models_dir() -> Path:
     return Path(base) / "pdf2word" / "models"
 
 
-def model_dir(name: str = MODEL_NAME) -> Path:
-    return models_dir() / name
+def model_dir() -> Path:
+    return models_dir() / MODEL_NAME
 
 
 def _sha256(path: Path) -> str:
@@ -84,12 +84,12 @@ def _open_url(url: str, timeout: float = 60.0):
     return r.iter_content(chunk_size=1 << 20), (int(length) if length else None)
 
 
-def download_file(name: str, dest: Path, size: int, sha256: str, urls=MODEL_URLS) -> None:
+def download_file(name: str, dest: Path, size: int, sha256: str) -> None:
     """Fetch one model file through a .part file; keep it only when size and hash match."""
     dest.parent.mkdir(parents=True, exist_ok=True)
     part = dest.with_name(dest.name + ".part")
     errors = []
-    for base in urls:
+    for base in MODEL_URLS:
         url = base + name
         try:
             chunks, length = _open_url(url)
@@ -147,19 +147,36 @@ def preprocess(img: Image.Image) -> np.ndarray:
 
 
 _TOKEN_RE = re.compile(r"\\[A-Za-z]+\*?|\\.|\S")
-_EMPTY_GROUP_RE = re.compile(r"(?:\\[A-Za-z]+|[_^])?\{\}")
+#: commands that take an argument: with an empty one ('\hat{}', '\mathrm{}') they draw nothing
+_ARG_CMDS = frozenset((
+    "hat widehat tilde widetilde bar vec dot ddot check breve acute grave overline underline "
+    "overrightarrow overleftarrow mathrm mathbf mathit mathcal mathbb mathsf mathtt mathfrak mathscr "
+    "boldsymbol bm text textrm textbf textit operatorname sqrt underbrace overbrace").split())
+_EMPTY_GROUP_RE = re.compile(r"(\\[A-Za-z]+|[_^])?\{\}(?=([_^])?)")
 _FONT_SWITCH_RE = re.compile(r"\\(?:sf|tt|it)(?![A-Za-z])\s*")
+
+
+def _drop_empty(m: re.Match) -> str:
+    """Replacement for an empty group found by _EMPTY_GROUP_RE."""
+    head = m.group(1) or ""
+    if head in ("_", "^") or head[1:] in _ARG_CMDS:
+        return ""                              # an empty script, an accent / font command on nothing
+    if head:
+        return m.group(0)                      # '\to{}': the {} only ends the command word - keep it
+    return m.group(0) if m.group(2) else ""    # '{}^{14}': the empty base of a pre-script stays
 
 
 def postprocess(text: str) -> str:
     """The tokenizer's output has a space between every token ('\\frac { a } { b }'): join the
-    tokens (a space stays only between a control word and a letter), drop the empty groups and
-    the leading '^{..}' / '_{..}' the model sometimes emits, and spell what pdf2word's renderers
+    tokens (a space stays only between a control word or a row break and a letter), drop the
+    empty groups that draw nothing (an empty script, accent or font command; the {} after an
+    argument-less command and the empty base of a pre-script '{}^{14}' stay) and the leading
+    '^{..}' / '_{..}' the model sometimes emits, and spell what pdf2word's renderers
     expect (\\frac for \\cfrac, \\operatorname without the star, no \\sf / \\tt / \\it)."""
     tokens = _TOKEN_RE.findall(text or "")
     out = []
     for tok in tokens:
-        if out and re.fullmatch(r"\\[A-Za-z]+", out[-1]) and tok[0].isalpha():
+        if out and (re.fullmatch(r"\\[A-Za-z]+", out[-1]) or out[-1] == "\\\\") and tok[0].isalpha():
             out.append(" ")
         out.append(tok)
     s = "".join(out)
@@ -169,7 +186,7 @@ def postprocess(text: str) -> str:
     s = re.sub(r"\\[cdt]frac(?![A-Za-z])", r"\\frac", s)
     s = s.replace("\\operatorname*", "\\operatorname")
     for _ in range(10):
-        new = _EMPTY_GROUP_RE.sub("", s)
+        new = _EMPTY_GROUP_RE.sub(_drop_empty, s)
         if new == s:
             break
         s = new
@@ -180,26 +197,28 @@ def postprocess(text: str) -> str:
 
 # ----------------------------------------------------------------------------- runner
 
-def _repeating(ids: list, window: int = 32, min_repeats: int = 4) -> bool:
-    """True when the tail of `ids` is a short cycle repeated min_repeats times (the model is
-    looping and the rest would be garbage anyway)."""
-    tail = ids[-window:]
-    for period in range(1, window // min_repeats + 1):
-        if len(tail) < period * min_repeats:
-            break
-        unit = tail[-period:]
-        if all(tail[-period * (k + 1):len(tail) - period * k] == unit for k in range(1, min_repeats)):
+def _repeating(ids: list, span: int = 32, min_repeats: int = 4, max_period: int = 8) -> bool:
+    """True when the tail of `ids` is a cycle of 1-8 tokens repeated over at least `span` tokens
+    (and at least min_repeats times): the model is looping and the rest would be garbage anyway.
+    A short run of one id is ordinary LaTeX - four closing braces, '{cccc}', '10000' - so
+    period 1 needs 32 equal ids and period 8 four repeats."""
+    for period in range(1, max_period + 1):
+        reps = max(min_repeats, -(-span // period))
+        n = period * reps
+        if len(ids) < n:
+            continue                           # (not break: n is not monotonic in period)
+        tail = ids[-n:]
+        if tail == tail[-period:] * reps:
             return True
     return False
 
 
 class MFRRunner:
     """Encoder + decoder sessions and the greedy decoding loop. `sessions` / `tokenizer` can be
-    injected (the tests use fakes); otherwise they are created from `directory` on first use."""
+    injected (the tests use fakes); otherwise they are created from the models folder on first use."""
 
-    def __init__(self, directory: Optional[Path] = None, max_tokens: int = MAX_TOKENS,
-                 time_budget: float = TIME_BUDGET, sessions=None, tokenizer=None):
-        self.directory = Path(directory) if directory else None
+    def __init__(self, max_tokens: int = MAX_TOKENS, time_budget: float = TIME_BUDGET,
+                 sessions=None, tokenizer=None):
         self.max_tokens = int(max_tokens)
         self.time_budget = float(time_budget)
         self._enc, self._dec = sessions if sessions else (None, None)
@@ -208,7 +227,7 @@ class MFRRunner:
     def load(self) -> "MFRRunner":
         if self._enc is None or self._dec is None:
             import onnxruntime as ort
-            directory = ensure_model(self.directory)
+            directory = ensure_model()
             opts = ort.SessionOptions()
             opts.log_severity_level = 3
             opts.intra_op_num_threads = max(1, min(THREADS, os.cpu_count() or THREADS))
@@ -218,7 +237,7 @@ class MFRRunner:
             self._dec = ort.InferenceSession(str(directory / "decoder_model.onnx"), opts, providers=providers)
         if self._tok is None:
             from tokenizers import Tokenizer
-            directory = ensure_model(self.directory)
+            directory = ensure_model()
             self._tok = Tokenizer.from_file(str(directory / "tokenizer.json"))
         return self
 

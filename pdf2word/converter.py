@@ -3,11 +3,14 @@ figures copied into an asset folder, Obsidian post-processing."""
 from __future__ import annotations
 
 import re
+import shutil
+import tempfile
 import time
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
+from urllib.parse import quote
 
 import pymupdf
 
@@ -18,11 +21,11 @@ from .inlinemath import inline_text_math
 from .mathocr import (LABEL_RE, TEXT_FLAGS, EquationOCR, EquationResult, build_engine, find_labels, hint_usable,
                       label_text, render, tight_crop)
 from .metadata import PaperMeta, detect_doc_type, document_meta, resolve_metadata
-from .obsidian import block_id, build_frontmatter, ensure_title, image_link, postprocess
+from .obsidian import block_id, build_frontmatter, ensure_title, image_link, postprocess, yaml_str
 from .outline import PageNumbers, Part, page_groups, parse_pages, part_document, read_outline, select_parts, split_children
-from .vectormath import doubtful_equation, find_math, inline_latex_ok
+from .vectormath import doubtful_equation, find_math, inline_latex_ok, reads_as_text
 from .symbols import has_pua, map_pua
-from .utils import log, parse_page_range, safe_name, slugify_title, strip_emphasis
+from .utils import log, safe_name, slugify_title, strip_emphasis, wiki_safe_name
 
 CAPTION_RE = re.compile(r"^\W*(Fig(?:ure)?|Table|Scheme|Algorithm|Chart|Plate)\.?\s*([A-Z]?[0-9]+[A-Za-z]?)", re.I)
 # A real caption: bold label ("**Figure 3.** ...") or a label closed by . / : ("Table A1. ...").
@@ -145,7 +148,7 @@ class Converter:
                 log.info("  author: %s (%d authors)  year: %s", meta.first_author or "?", len(meta.authors),
                          meta.year or "nd")
             base_name = safe_name(name_t.format(**fields), 150)
-            asset_name = safe_name(asset_t.format(**fields), 120)
+            asset_name = wiki_safe_name(asset_t.format(**fields), 120)
             if pages is None:
                 return self._run(doc, pdf_path, meta, doc_type, base_name, asset_name, t0=t0)
             # a page range: work on a sub-document so that nothing scans the other pages
@@ -226,7 +229,7 @@ class Converter:
                     try:
                         results.append(self._run(sub, pdf_path, meta, "document",
                                                  safe_name(name_t.format(**fields), 150),
-                                                 safe_name(asset_t.format(**fields), 120), part=part,
+                                                 wiki_safe_name(asset_t.format(**fields), 120), part=part,
                                                  page_map=list(range(part.page_from, part.page_to + 1)),
                                                  total_pages=doc.page_count, t0=t0))
                     finally:
@@ -251,7 +254,6 @@ class Converter:
         opt = self.opt
         t0 = t0 or time.time()
         total_pages = total_pages or doc.page_count
-        pages = None
         fmt = (opt.format or "docx").lower()
         if fmt not in ("docx", "md", "both"):
             raise ValueError(f"unknown output format: {opt.format}")
@@ -261,12 +263,20 @@ class Converter:
         asset_dir = out_dir / asset_name
         targets = [p for p, wanted in ((md_path, fmt != "docx"), (docx_path, fmt != "md")) if wanted]
         if not opt.overwrite and any(p.exists() for p in targets):
-            log.info("  exists, skipped (use --overwrite): %s", ", ".join(p.name for p in targets if p.exists()))
+            log.info("  exists, skipped (--no-overwrite is set): %s", ", ".join(p.name for p in targets if p.exists()))
             return ConversionResult(pdf_path, md_path if fmt != "docx" else None, asset_dir, meta,
                                     docx_path=docx_path if fmt != "md" else None, skipped=True,
                                     part=part, doc_type=doc_type)
 
         out_dir.mkdir(parents=True, exist_ok=True)
+        scratch: Optional[Path] = None
+        if fmt == "docx":
+            # the images only feed the .docx: build them in a private folder so that an asset
+            # folder of the same name in out_dir (an earlier .md's) is never touched
+            scratch = Path(tempfile.mkdtemp(prefix="pdf2word-"))
+            asset_dir = scratch / asset_name
+        else:
+            asset_dir = self._own_asset_dir(out_dir, asset_name, md_path)
         asset_dir.mkdir(parents=True, exist_ok=True)
         self._remove_generated(asset_dir)
 
@@ -276,15 +286,13 @@ class Converter:
             # 1) layout analysis + markdown per page (pymupdf4llm + PyMuPDF Layout)
             _patch_pymupdf4llm_pua()
             import pymupdf4llm
-            if opt.lighten:
-                layout_doc, n_light = lighten_document(doc, dpi=opt.dpi)
-                stats["pages_lightened"] = n_light
-            n_pages = len(pages) if pages else doc.page_count
+            layout_doc = self._layout_doc(doc, stats)
+            n_pages = doc.page_count
             log.info("  layout analysis (%d pages) ...", n_pages)
             t_layout = time.time()
             # write_images=False: pictures are rendered from the ORIGINAL document in _picture()
             chunks = pymupdf4llm.to_markdown(
-                layout_doc, pages=pages, page_chunks=True, write_images=False,
+                layout_doc, page_chunks=True, write_images=False,
                 header=opt.keep_headers, footer=opt.keep_headers,
                 use_ocr=opt.ocr_pages, force_text=True, show_progress=n_pages > 30,
             )
@@ -315,21 +323,22 @@ class Converter:
             if fmt in ("docx", "both"):
                 from .docx_out import build_docx
                 log.info("  writing Word document ...")
-                build_docx(body, meta, out_dir, docx_path, opt, stats)
+                build_docx(body, meta, asset_dir.parent, docx_path, opt, stats)
                 written.append(docx_path.name)
         finally:
             if self._ocr is not None:
                 self._ocr.cache.save()
             if layout_doc is not doc:
                 layout_doc.close()
+            if scratch is not None:               # images live inside the .docx now
+                shutil.rmtree(scratch, ignore_errors=True)
 
-        if fmt == "docx":                         # images live inside the .docx now
-            self._remove_generated(asset_dir)
-        if not any(asset_dir.iterdir()):
-            asset_dir.rmdir()
-            asset_dir_out = None
-        else:
-            asset_dir_out = asset_dir
+        asset_dir_out = None
+        if scratch is None:
+            if any(asset_dir.iterdir()):
+                asset_dir_out = asset_dir
+            else:
+                asset_dir.rmdir()
         stats["seconds"] = round(time.time() - t0, 1)
         log.info("  -> %s  (%ss; equations %d ok / %d as image%s; inline text math %d; figures %d%s)",
                  " + ".join(written), stats["seconds"], stats["eq_ok"], stats["eq_fallback"],
@@ -342,6 +351,20 @@ class Converter:
                                 part=part, doc_type=doc_type)
 
     # -- helpers ------------------------------------------------------------
+    def _layout_doc(self, doc, stats: Counter):
+        """The document the layout analysis reads: `doc`, or a lightened copy (image clusters merged,
+        big bitmaps swapped for a blank stand-in). Not with --ocr-pages: the OCR decision and the OCR
+        itself need the page pixels. The caller closes a copy."""
+        opt = self.opt
+        if not opt.lighten:
+            return doc
+        if opt.ocr_pages:
+            log.info("  lighten skipped: --ocr-pages needs the original page pixels")
+            return doc
+        layout_doc, n_light = lighten_document(doc, dpi=opt.dpi)
+        stats["pages_lightened"] = n_light
+        return layout_doc
+
     @staticmethod
     def _open(pdf_path) -> pymupdf.Document:
         doc = pymupdf.open(pdf_path)
@@ -381,6 +404,30 @@ class Converter:
         return dict(author=author, year=year, title=title_slug, stem=safe_name(pdf_path.stem, 80))
 
     @staticmethod
+    def _own_asset_dir(out_dir: Path, asset_name: str, md_path: Path) -> Path:
+        """The asset folder of a Markdown output: `asset_name`, unless a folder of that name holds
+        another output's images (the default '_asset-{author}-{year}' is shared by every paper of
+        that author and year). Then asset_name-2, -3 ...: the first one that is missing, empty or
+        ours - linked from the .md this run rewrites, or named in its frontmatter."""
+        try:
+            own = md_path.read_text(encoding="utf-8") if md_path.is_file() else ""
+        except (OSError, UnicodeDecodeError):
+            own = ""
+        n = 1
+        while True:
+            name = asset_name if n == 1 else f"{asset_name}-{n}"
+            cand = out_dir / name
+            if not cand.exists():
+                break
+            if cand.is_dir() and (not any(cand.iterdir()) or f"assets: {yaml_str(name)}\n" in own
+                                  or f"[[{name}/" in own or f"]({quote(name + '/')}" in own):
+                break
+            n += 1
+        if n > 1:
+            log.info("  %s holds another output's images; using %s", asset_name, name)
+        return cand
+
+    @staticmethod
     def _remove_generated(asset_dir: Path) -> None:
         for f in asset_dir.iterdir():
             if f.is_file() and GENERATED_RE.match(f.name):
@@ -404,7 +451,6 @@ def convert(pdf_path, options: Optional[Options] = None, **kwargs) -> Conversion
 
 class _DocContext:
     def __init__(self, doc, asset_dir: Path, stats: Counter, conv: Converter, page_map: Optional[list] = None):
-        self.doc = doc
         self.asset_dir = asset_dir
         self.stats = stats
         self.conv = conv
@@ -414,26 +460,29 @@ class _DocContext:
         self.picture_names: dict = {}          # base -> [filename, ...] (for sub-figure lettering)
         self.eq_seq = 0
         self.inline_seq = 0
-        self.logo_xrefs = self._repeated_images(doc)
         self._page_images_cache: dict = {}
+        self.logo_xrefs = self._repeated_images(doc, self._page_images_cache)
 
     # ---- document-level helpers ------------------------------------------
     def pdf_page(self, page) -> int:
-        """1-based page number in the full PDF (for log messages)."""
+        """1-based page number in the full PDF (log messages, picture file names)."""
         pno = page.number
         if self.page_map and pno < len(self.page_map):
             pno = self.page_map[pno]
         return pno + 1
 
     @staticmethod
-    def _repeated_images(doc) -> set:
-        """XObjects shown on many pages (journal logos in headers/footers)."""
+    def _repeated_images(doc, infos_by_page: Optional[dict] = None) -> set:
+        """XObjects shown on many pages (journal logos in headers/footers). The per-page lists are
+        kept in `infos_by_page` (the _page_images cache: same document, same page numbers)."""
         pages_of: dict = {}
         for pno in range(doc.page_count):
             try:
                 infos = doc[pno].get_image_info(xrefs=True)
             except Exception:
                 continue
+            if infos_by_page is not None:
+                infos_by_page[pno] = infos
             for info in infos:
                 xref = info.get("xref") or 0
                 if xref:
@@ -480,12 +529,16 @@ class _DocContext:
             tmp_names[old] = tmp
         for old, new in renames.items():
             tmp_names[old].replace(self.asset_dir / new)
-        # markdown references: tokens first, then the new names (no chained replacements)
-        prefix = self.asset_dir.name + "/"
+        # markdown references, spelled as _embed() wrote them (obsidian.image_link URL-quotes the
+        # path for image_links="markdown"); tokens first, then the new names (no chained replacements)
+        def ref(name: str) -> str:
+            rel = f"{self.asset_dir.name}/{name}"
+            return quote(rel) if self.opt.image_links == "markdown" else rel
+
         for i, old in enumerate(renames):
-            body = body.replace(prefix + old, f"\x00{i}\x00")
+            body = body.replace(ref(old), f"\x00{i}\x00")
         for i, (old, new) in enumerate(renames.items()):
-            body = body.replace(f"\x00{i}\x00", prefix + new)
+            body = body.replace(f"\x00{i}\x00", ref(new))
         return body
 
     # ---- page --------------------------------------------------------------
@@ -583,14 +636,16 @@ class _DocContext:
         """A display equation drawn as graphics (no text layer, no layout box): OCR of the
         rendered region, numbered by a '(5.95)' label found to its right."""
         strip = pymupdf.Rect(eq.x1, eq.y0 - 3, page.rect.x1, eq.y1 + 3)
-        labels = find_labels(page, strip) if strip.width > 10 else []
+        # `box` keeps find_labels from taking the other column's numbers on two-column pages
+        labels = find_labels(page, strip, box=eq) if strip.width > 10 else []
         label = labels[0][0] if labels else None
         region = (eq + (-2, -2, 2, 2)) & page.rect
+        result = self.conv.ocr.recognize_region(page, region, "", read=self.opt.math_mode != "image")
+        if reads_as_text(result.latex):          # a word drawn as graphics (badge, wordmark), not an equation
+            log.debug("  page %d: drawn cluster reads as text (%s), dropped", self.pdf_page(page), result.latex)
+            return ""
         self.stats["eq_total"] += 1
         self.stats["eq_drawn"] += 1
-        result = self.conv.ocr.recognize_region(page, region, "")
-        if result.cached:
-            self.stats["eq_cached"] += 1
         if label:
             self._consumed_labels.append(label)
         return "\n" + self._format_equation(result, label, "", page, region) + "\n"
@@ -618,39 +673,36 @@ class _DocContext:
                 # equation without a text layer
                 self.stats["eq_unverified"] += 1
             self.stats["eq_total"] += 1
-            result = self.conv.ocr.recognize_region(page, region, hint, mask)
-            if result.cached:
-                self.stats["eq_cached"] += 1
+            result = self.conv.ocr.recognize_region(page, region, hint, mask, read=self.opt.math_mode != "image")
             blocks.append(self._format_equation(result, label, "" if unverified else hint, page, region,
                                                 unverified=unverified))
         return "\n" + "\n".join(blocks) + "\n"
 
     @staticmethod
-    def _split_regions(rect: pymupdf.Rect, labels: list, page=None) -> list:
+    def _split_regions(rect: pymupdf.Rect, labels: list, page) -> list:
         """A formula box may stack several numbered equations: one region per label,
         [(region, label, mask)]. A number on the equation's own text row is cut off at its left
         edge. A number on a row of its own (under the end of a tall equation - paper-01 eq. (3))
         keeps the region's full width, because cutting there removed the end of the equation,
-        and is painted out through `mask` instead. Without `page` every number is cut off."""
+        and is painted out through `mask` instead."""
         if not labels:
             return [(rect, None, [])]
         rows = []                                        # text rows that are not a number
-        if page is not None:
-            try:
-                blocks = page.get_text("dict", clip=rect, flags=TEXT_FLAGS)["blocks"]
-            except Exception:
-                blocks = []
-            for block in blocks:
-                for line in block.get("lines", []):
-                    text = "".join(s["text"] for s in line["spans"])
-                    if text.strip() and not LABEL_RE.match(label_text(text)):
-                        rows.append(pymupdf.Rect(line["bbox"]))
+        try:
+            blocks = page.get_text("dict", clip=rect, flags=TEXT_FLAGS)["blocks"]
+        except Exception:
+            blocks = []
+        for block in blocks:
+            for line in block.get("lines", []):
+                text = "".join(s["text"] for s in line["spans"])
+                if text.strip() and not LABEL_RE.match(label_text(text)):
+                    rows.append(pymupdf.Rect(line["bbox"]))
         centers = [(lr.y0 + lr.y1) / 2 for _, lr in labels]
         bounds = [rect.y0] + [(centers[i] + centers[i + 1]) / 2 for i in range(len(centers) - 1)] + [rect.y1]
         regions = []
         for i, (label, lr) in enumerate(labels):
             region = pymupdf.Rect(rect.x0, bounds[i], rect.x1, bounds[i + 1])
-            own_row = page is None or any(
+            own_row = any(
                 r.x0 < lr.x0 and min(r.y1, lr.y1) - max(r.y0, lr.y0) > 0.5 * lr.height for r in rows)
             if own_row and lr.x0 - 2 > rect.x0 + 10:
                 region.x1 = min(rect.x1, lr.x0 - 2)
@@ -696,15 +748,15 @@ class _DocContext:
         return "\n".join(lines) + "\n"
 
     def _save_equation_image(self, result: EquationResult, label: Optional[str], page, region) -> Optional[str]:
-        img = result.image
-        if img is None:
-            img = tight_crop(render(page, region, 3.0))
+        img, zoom = result.image, EquationOCR.DISPLAY_ZOOM
+        if img is None:                     # nothing at the display scale (masked or faint): 3x, unmasked
+            img, zoom = tight_crop(render(page, region, 3.0)), 3.0
         if img is None:
             return None
         self.eq_seq += 1
         base = f"eq-{re.sub(r'[^A-Za-z0-9-]+', '-', label)}" if label else f"eq-u{self.eq_seq:02d}"
         fname = self._unique(base) + ".png"
-        dpi = int(round(72 * max(self.conv.ocr.zooms[0], 2.0)))
+        dpi = int(round(72 * zoom))
         img.save(self.asset_dir / fname, dpi=(dpi, dpi))   # physical size survives into Word
         return fname
 
@@ -721,7 +773,7 @@ class _DocContext:
             if label:                      # numbered equation(s) set as a picture: one region per number
                 return self._formula(page, box, seg)
             if h <= 70 and w >= 100 and w / max(h, 1) >= 2.5:
-                eq = self._picture_as_equation(page, box, None)
+                eq = self._picture_as_equation(page, box)
                 if eq is not None:
                     return eq
         if not kind and (w < 20 or h < 20 or w * h < 2500 or self._is_logo(page, box)):   # logos, badges, icons
@@ -730,7 +782,7 @@ class _DocContext:
         if kind:
             base = f"{kind}{num}"
         else:
-            base = f"p{page.number + 1}-img{box['index'] + 1}"
+            base = f"p{self.pdf_page(page)}-img{box['index'] + 1}"
         fname = self._unique(base) + ".png"
         pix = page.get_pixmap(clip=rect, dpi=self.opt.dpi)      # rendered from the original PDF
         try:
@@ -765,22 +817,21 @@ class _DocContext:
         strip = pymupdf.Rect(x1, y0 - 3, page.rect.x1, y1 + 3)
         if strip.is_empty or strip.width < 10:
             return None
-        labels = find_labels(page, pymupdf.Rect(x0, y0 - 3, page.rect.x1, y1 + 3))
+        # `box` keeps find_labels from taking the other column's numbers on two-column pages
+        labels = find_labels(page, pymupdf.Rect(x0, y0 - 3, page.rect.x1, y1 + 3), box=pymupdf.Rect(box["bbox"]))
         labels = [(lb, r) for lb, r in labels if r.x0 >= x1 - 2]
         return labels[0][0] if labels else None
 
-    def _picture_as_equation(self, page, box: dict, label: Optional[str]) -> Optional[str]:
+    def _picture_as_equation(self, page, box: dict) -> Optional[str]:
         region = pymupdf.Rect(box["bbox"])
         result = self.conv.ocr.recognize_region(page, region, "")
-        if result.latex is None and not label:
+        if result.latex is None or reads_as_text(result.latex):
             return None                                   # probably a real picture after all
         self.stats["eq_total"] += 1
-        if label:
-            self._consumed_labels.append(label)
-        return "\n" + self._format_equation(result, label, "", page, region) + "\n"
+        return "\n" + self._format_equation(result, None, "", page, region) + "\n"
 
     @staticmethod
-    def _caption_info(box: dict, text: str):
+    def _caption_info(text: str):
         m = CAPTION_RE.match(strip_emphasis(text.strip()))
         if not m:
             return None
@@ -802,7 +853,7 @@ class _DocContext:
             cx0, cy0, cx1, cy1 = other["bbox"]
             if min(px1, cx1) - max(px0, cx0) <= 0:
                 continue
-            info = self._caption_info(other, text)
+            info = self._caption_info(text)
             if not info:
                 continue
             if cy0 >= py1 - 5:
@@ -840,7 +891,7 @@ class _DocContext:
         text = seg.strip()
         if not text:
             return ""
-        info = self._caption_info({}, text)
+        info = self._caption_info(text)
         if info and self.opt.block_ids:
             kind, num = info
             return f"\n{text} {block_id(kind, num)}\n\n"
@@ -965,10 +1016,10 @@ class _DocContext:
         if found:
             self.stats["inline_text_eqs"] += len(found)
             for src, repl in found:
-                log.debug("  page %d: text math %r -> %s", page.number + 1, src, repl)
+                log.debug("  page %d: text math %r -> %s", self.pdf_page(page), src, repl)
         if missed:
             self.stats["inline_text_missed"] += len(missed)
-            log.debug("  page %d: text math not located in markdown: %s", page.number + 1, "; ".join(missed))
+            log.debug("  page %d: text math not located in markdown: %s", self.pdf_page(page), "; ".join(missed))
         return new
 
     @staticmethod

@@ -5,6 +5,7 @@ number 'ð2Þ' must still count. See docs/issues/garbled-text-layer.md ("추가 
 from __future__ import annotations
 
 import sys
+from collections import Counter
 from pathlib import Path
 
 import pymupdf
@@ -12,7 +13,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from pdf2word.converter import _DocContext  # noqa: E402
+from pdf2word.config import Options  # noqa: E402
+from pdf2word.converter import Converter, _DocContext  # noqa: E402
 from pdf2word.mathocr import find_labels, ink_mask, render  # noqa: E402
 
 LEFT_BOX = pymupdf.Rect(42, 445, 294, 466)        # paper-01 p.2 eq. (1): spans the left column
@@ -56,6 +58,22 @@ def test_garbled_number_counts():
     assert [l for l, _ in find_labels(page, _strip(LEFT_BOX, page), box=LEFT_BOX)] == ["2"]
 
 
+def test_picture_equation_takes_its_own_columns_number():
+    pic = {"bbox": (42, 445, 270, 466)}           # an equation set as a picture in the left column
+    assert _DocContext._label_right_of(None, _two_column_page(), pic) == "1"
+    assert _DocContext._label_right_of(None, _two_column_page(left_label=""), pic) is None
+
+
+def test_drawn_equation_takes_its_own_columns_number(tmp_path):
+    eq = pymupdf.Rect(45, 448, 140, 466)           # a vector-drawn equation in the left column
+    for left_label, want in (("(1)", ["1"]), ("", [])):
+        page = _two_column_page(left_label=left_label)
+        ctx = _DocContext(page.parent, tmp_path, Counter(), Converter(Options(math_engine="none")))
+        ctx._consumed_labels = []
+        md = ctx._orphan_equation(page, eq)
+        assert ctx._consumed_labels == want and ("*Eq. (1)*" in md) == bool(want) and "(7)" not in md
+
+
 # ----------------------------------------------------------------------------- where the number sits
 
 def _numbered_page(label_y: float):
@@ -92,7 +110,4 @@ def test_number_on_its_own_row_keeps_the_width_and_is_masked():
     x1, y1 = int((lr.x1 - region.x0) * 2) + 1, int((lr.y1 - region.y0) * 2) + 1
     assert ink_mask(plain)[y0:y1, x0:x1].any() and not ink_mask(masked)[y0:y1, x0:x1].any()
     assert ink_mask(masked)[:, :x0 - 4].any()
-    # without a page every number is cut off (the old behaviour, used by callers without one)
-    (region, _, mask), = _DocContext._split_regions(BOX, labels)
-    assert region.x1 < lr.x0 and mask == []
     assert _DocContext._split_regions(BOX, [], page) == [(BOX, None, [])]
