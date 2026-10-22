@@ -34,7 +34,7 @@ GPU가 없는 보통 노트북에서 돌아가고, 인터넷은 서지정보 조
 
 1. 이 저장소를 `git clone` 하거나 ZIP으로 받아 적당한 폴더에 풉니다.
 2. **`main_gui.bat`** 를 더블클릭합니다. 처음에는 가상환경을 만들고 필요한 패키지를 자동으로 설치합니다(인터넷 필요, 몇 분). 끝나면 창이 뜹니다. 가상환경은 PC에 어떤 Python이 깔려 있든 **항상 Python 3.12**로 만듭니다: ① uv가 있으면 uv가 설치된 3.12를 쓰거나 3.12를 내려받고, ② uv가 없고 `py -3.12`(또는 3.12인 `python`)가 있으면 그것으로 만들고, ③ 둘 다 없으면 uv를 설치한 뒤 ①로 갑니다. 이미 있는 가상환경도 Python이 3.12일 때만 쓰고, 아니면(예: 다른 PC에서 3.11이나 3.13으로 만든 것) 설치 도중 실패하는 대신 이유와 조치(폴더 삭제 후 재실행)를 알려 주고 멈춥니다.
-3. 끝입니다. 첫 변환 때 수식 인식 모델(약 170 MB)을 한 번 내려받습니다.
+3. 끝입니다. 첫 변환 때 수식 인식 모델(약 120 MB)을 한 번 내려받습니다.
 
 `main_gui.bat`가 쓰는 가상환경은 아래 순서로 먼저 찾은 것입니다.
 
@@ -77,7 +77,7 @@ py -3.12 -m venv .venv
 2. **📄 PDF 파일** – `파일 추가`로 PDF를 고릅니다. 여러 개를 한 번에 골라도 되고, `폴더 추가`로 폴더째 넣어도 됩니다. 목록에는 쪽수와 책갈피 개수가 함께 보입니다.
 3. **📑 챕터 선택…** (책·매뉴얼처럼 큰 PDF일 때) – 목록에서 파일을 고르고 이 버튼을 누르면 책갈피 트리가 뜹니다. 항목을 체크하면 하위 항목까지 함께 체크되고 그 묶음이 **파일 하나**가 됩니다(하위 하나를 빼면 상위는 ▣로 바뀌고 나머지 하위가 각각 파일이 됩니다). 체크한 챕터를 절마다 따로 저장하려면 *하위 항목별 파일로 나누기*를 켜세요. 체크하지 않으면 문서 전체를 하나로 변환하고, 책갈피가 없는 PDF는 같은 창에서 *일정 쪽수마다 나누기*를 쓸 수 있습니다. 쪽 수는 책에 인쇄된 번호와 PDF 순번을 나란히 보여 줍니다.
 4. **📁 저장 위치와 형식** – 기본은 *PDF 옆에 Word 저장*입니다. Obsidian 노트가 필요하면 `Obsidian Markdown`(또는 `둘 다`)을 고르고, `폴더 선택…`으로 vault 안의 폴더를 지정하면 바로 노트가 됩니다.
-5. **∑ 수식** – 기본값 그대로 두면 됩니다. `rapid`는 무료 로컬 OCR, `claude`는 더 정확하지만 Anthropic API 키와 요금이 듭니다.
+5. **∑ 수식** – 기본값 그대로 두면 됩니다. `p2t`(기본)는 무료 로컬 OCR(Pix2Text MFR 1.5), `rapid`는 무료 로컬 OCR이며 `p2t`를 못 쓸 때의 폴백, `claude`는 Anthropic API 키와 요금이 듭니다.
 6. **⚙ 문서 종류** – 보통 *자동 판별*로 둡니다. 논문(첫 쪽에 DOI나 초록이 있는 글)은 서지 조회·초록·참고문헌을 처리하고, 책·매뉴얼은 파일명 그대로 저장합니다. 판별이 틀리면 직접 고르세요.
 7. **✨ 변환 시작** – 아래 로그 창에 진행 상황이 흐르고, 끝나면 **📂 결과 폴더 열기**가 켜집니다.
 
@@ -122,13 +122,13 @@ papers\
 ## 4. 자주 묻는 질문
 
 **수식이 틀리게 읽혔어요.**
-OCR은 완벽하지 않습니다. 그래서 항상 원본 이미지를 수식 위에 같이 넣습니다. 이미지를 보고 Word에서 고치거나, `--math-engine claude`(API 키 필요)로 다시 변환해 보세요. 정도가 심하면 자동으로 `⚠ OCR 신뢰도 낮음 (34%)` 표시가 붙습니다. 이 표시는 OCR 결과를 PDF의 텍스트 레이어와 대조해서 붙이는데, 텍스트 레이어가 깨진 PDF(구형 Elsevier 논문 등, 본문을 복사하면 `¼`·`ð`·`þ` 같은 글자가 나오는 것)에서는 대조할 기준이 없어 표시를 붙이지 않고 대신 로그와 Markdown 머리에 `equations_unverified` 건수를 적습니다. 이런 PDF는 수식을 이미지와 직접 대조하세요.
+OCR은 완벽하지 않습니다. 기본 엔진 `p2t`도 마찬가지여서, 항상 원본 이미지를 수식 위에 같이 넣습니다. 이미지를 보고 Word에서 고치거나, `--math-engine claude`(API 키 필요)나 `--math-engine rapid`로 다시 변환해 비교해 보세요. 정도가 심하면 자동으로 `⚠ OCR 신뢰도 낮음 (34%)` 표시가 붙습니다. 이 표시는 OCR 결과를 PDF의 텍스트 레이어와 대조해서 붙이는데, 텍스트 레이어가 깨진 PDF(구형 Elsevier 논문 등, 본문을 복사하면 `¼`·`ð`·`þ` 같은 글자가 나오는 것)에서는 대조할 기준이 없어 표시를 붙이지 않고 대신 로그와 Markdown 머리에 `equations_unverified` 건수를 적습니다. 이런 PDF는 수식을 이미지와 직접 대조하세요.
 
 **Word에 수식 대신 `\frac{…}` 같은 글자가 들어가요.**
 Microsoft Office가 없는 PC입니다. Word 수식은 Office에 포함된 변환 파일(`MML2OMML.XSL`)로 만들기 때문에, Office가 없으면 LaTeX 문자열로 대신 적습니다. Word 365에서는 그 글자를 선택해 `Alt + =` 로 수식으로 바꿀 수 있습니다.
 
 **처음 실행이 오래 걸려요.**
-첫 변환 때 수식 인식 모델 약 170 MB를 내려받습니다. 한 번만 받습니다.
+첫 변환 때 수식 인식 모델을 한 번 내려받습니다. 기본 엔진 `p2t`는 모델 파일 3개(합계 약 120 MB)를 `%LOCALAPPDATA%\pdf2word\models\pix2text-mfr-1.5`(Windows, 그 외 `~/.cache/pdf2word/models`)에 받고 크기와 sha256을 검사합니다. 환경변수 `PDF2WORD_MODELS`로 모델 폴더를 바꿀 수 있습니다. 내려받지 못하면(오프라인·방화벽) 로그에 사유를 적고 `rapid`(RapidLaTeXOCR, 약 170 MB 별도)로 변환을 계속합니다. 직접 받으려면 https://huggingface.co/breezedeus/pix2text-mfr-1.5 에서 `encoder_model.onnx`, `decoder_model.onnx`, `tokenizer.json`을 위 폴더의 `pix2text-mfr-1.5`에 넣으세요. 새 pip 패키지는 필요 없습니다(onnxruntime·tokenizers는 이미 설치돼 있음).
 
 **"pdf2word 패키지를 불러올 수 없습니다" 창이 떠요.**
 가상환경 밖의 파이썬으로 실행된 것입니다. `main_gui.bat`로 실행하세요. 직접 실행하려면 가상환경의 `Scripts\python.exe`로 `main_gui.py`를 여세요.
@@ -191,7 +191,8 @@ python main_gui.py paper.pdf -f md       # main_gui.py 도 인자를 주면 명�
 | `--chapter-template` | `{stem}-{num}-{title}` | 챕터 파일 이름. `{id}`(책갈피 번호) `{p0}` `{p1}`(쪽 범위)도 사용 가능 |
 | `--split-pages` | 0 | N쪽마다 한 파일(책갈피 없는 PDF용). 이름은 `{stem}-{num}-p0001-0050` |
 | `--subchapters` | 끔 | 고른 항목을 바로 아래 하위 항목마다 파일로 나눔. 첫 하위 항목 앞의 서론은 항목 제목의 파일로 |
-| `--math-engine` | `rapid` | `rapid`(로컬, 무료) / `claude`(API) / `none`(OCR 없이 이미지만) |
+| `--math-engine` | `p2t` | `p2t`(Pix2Text MFR 1.5, 로컬·무료, 여러 줄 식을 통째로 읽음, 모델을 못 받으면 `rapid`로 대체) / `rapid`(RapidLaTeXOCR, 로컬, 폴백) / `claude`(API) / `none`(OCR 없이 이미지만) |
+| `--math-zooms` | 엔진별 | 수식을 읽을 때 시도하는 렌더 배율을 순서대로(예: `4,3,2`). 생략하면 엔진 기본: `p2t` 4,3,2 / `rapid` 2,3,4 |
 | `--math-mode` | `both` | `both`(이미지 + OCR 결과) / `latex`(OCR 결과만, 실패·불확실 시 이미지) / `image` |
 | `--docx-math` | `native` | Word 수식: `native`(편집 가능한 수식, Office 필요) / `text`(LaTeX 문자열) |
 | `--author`, `--year`, `--title` | 자동 | 서지정보를 직접 지정 (파일·폴더 이름에 쓰임) |
@@ -227,7 +228,7 @@ print(r.docx_path, r.md_path, r.asset_dir, r.stats)
 ## 6. 동작 원리 (간단히)
 
 1. **레이아웃 분석** – `pymupdf4llm` + `pymupdf-layout`(CPU 전용 모델)이 페이지를 제목/본문/수식/그림/캡션/표/머리글 박스로 나누고 읽기 순서를 정합니다. 머리글·바닥글은 버립니다.
-2. **수식** – 수식 박스를 원본에서 다시 그려 여백을 자르고, 오른쪽의 식 번호를 분리한 뒤 RapidLaTeXOCR(pix2tex의 ONNX 버전)로 읽습니다. 여러 줄 식은 줄 단위로 읽어 합칩니다. 결과를 PDF 텍스트 레이어와 글자 단위로 대조해 유사도를 매기고, 낮으면 다른 배율로 다시 읽어 가장 잘 맞는 것을 고릅니다.
+2. **수식** – 수식 박스를 원본에서 다시 그려 여백을 자르고, 식 번호를 분리한 뒤 Pix2Text MFR 1.5(ONNX, torch 없이 onnxruntime으로 구동)로 읽습니다. `p2t`는 여러 줄 식도 통째로 읽고, 폴백 `rapid`(RapidLaTeXOCR, pix2tex의 ONNX 버전)는 줄 단위로 읽어 합칩니다. 결과를 PDF 텍스트 레이어와 글자 단위로 대조해 유사도를 매기고, 낮으면 다른 배율로 다시 읽어 가장 잘 맞는 것을 고릅니다.
 3. **Word 수식** – LaTeX → MathML(`latex2mathml`) → OMML(Office의 `MML2OMML.XSL`)로 바꿔 Word 수식 개체로 넣습니다.
 4. **본문 수식** – 글꼴(CM, Symbol, CambriaMath …)·크기·기준선을 보고 ρ_f, u_i 같은 인라인 수식을 찾아 LaTeX로 바꿉니다. Word/MathType 문서에서 사라지는 Symbol 폰트 글자(ρ, ∂, α …)도 복구합니다.
 5. **그림** – 그림 박스를 원본에서 렌더링하고 바로 아래/위 캡션으로 이름을 정합니다. 페이지마다 반복되는 로고는 뺍니다.
@@ -254,7 +255,7 @@ print(r.docx_path, r.md_path, r.asset_dir, r.stats)
 
 ```bash
 uv sync --locked --extra dev          # 개발용 환경(.venv, Python 3.12, pytest 포함)
-.venv\Scripts\python -m pytest tests -q   # 순수 함수 테스트 37개 (모델·네트워크 불필요)
+.venv\Scripts\python -m pytest tests -q   # 순수 함수 테스트 57개 (모델·네트워크 불필요)
 pdf2word sample.pdf --pages 1-5 -v    # 실제 변환 확인
 ```
 
@@ -268,7 +269,8 @@ pdf2word sample.pdf --pages 1-5 -v    # 실제 변환 확인
 | 구성 요소 | 라이선스 | 용도 |
 |---|---|---|
 | [PyMuPDF](https://github.com/pymupdf/PyMuPDF), [PyMuPDF4LLM](https://github.com/pymupdf/pymupdf4llm), pymupdf-layout | AGPL-3.0 (또는 Artifex 상용) | PDF 읽기, 레이아웃 분석, Markdown 변환 |
-| [RapidLaTeXOCR](https://github.com/RapidAI/RapidLaTeXOCR) ([LaTeX-OCR](https://github.com/lukas-blecher/LaTeX-OCR) 모델) | Apache-2.0 / MIT | 수식 OCR |
+| [Pix2Text MFR 1.5](https://huggingface.co/breezedeus/pix2text-mfr-1.5) 모델 ([Pix2Text](https://github.com/breezedeus/Pix2Text)) | MIT | 수식 OCR(`p2t`, 기본) |
+| [RapidLaTeXOCR](https://github.com/RapidAI/RapidLaTeXOCR) ([LaTeX-OCR](https://github.com/lukas-blecher/LaTeX-OCR) 모델) | Apache-2.0 / MIT | 수식 OCR(`rapid`, 폴백) |
 | [python-docx](https://github.com/python-openxml/python-docx) | MIT | Word 문서 작성 |
 | [latex2mathml](https://github.com/roniemartinez/latex2mathml) | MIT | LaTeX → MathML |
 | [Anthropic SDK](https://github.com/anthropics/anthropic-sdk-python) (선택) | MIT | Claude 비전 수식 OCR |

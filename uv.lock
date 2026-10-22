@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = "==3.12.*"
 resolution-markers = [
     "sys_platform == 'darwin'",
@@ -416,6 +416,7 @@ source = { editable = "." }
 dependencies = [
     { name = "latex2mathml" },
     { name = "numpy" },
+    { name = "onnxruntime" },
     { name = "pillow" },
     { name = "pymupdf" },
     { name = "pymupdf-layout" },
@@ -423,6 +424,7 @@ dependencies = [
     { name = "python-docx" },
     { name = "rapid-latex-ocr" },
     { name = "requests" },
+    { name = "tokenizers" },
 ]
 
 [package.optional-dependencies]
@@ -438,14 +440,16 @@ requires-dist = [
     { name = "anthropic", marker = "extra == 'claude'", specifier = ">=0.60" },
     { name = "latex2mathml", specifier = ">=3.77" },
     { name = "numpy", specifier = ">=1.24" },
+    { name = "onnxruntime", specifier = ">=1.17" },
     { name = "pillow", specifier = ">=10" },
-    { name = "pymupdf", specifier = ">=1.26.4" },
-    { name = "pymupdf-layout", specifier = ">=1.26" },
-    { name = "pymupdf4llm", specifier = ">=1.26" },
+    { name = "pymupdf", specifier = ">=1.26.4,<2" },
+    { name = "pymupdf-layout", specifier = ">=1.26,<2" },
+    { name = "pymupdf4llm", specifier = ">=1.26,<2" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7" },
     { name = "python-docx", specifier = ">=1.1" },
     { name = "rapid-latex-ocr", specifier = ">=0.0.9" },
     { name = "requests", specifier = ">=2.28" },
+    { name = "tokenizers", specifier = ">=0.20" },
 ]
 provides-extras = ["claude", "dev"]
 

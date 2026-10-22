@@ -35,7 +35,7 @@ def app_version() -> str:
         return ""
 
 FORMATS = [("📝 Word (.docx)", "docx"), ("🔗 Obsidian Markdown", "md"), ("둘 다", "both")]
-ENGINES = [("rapid  (로컬, 무료)", "rapid"), ("claude  (API, 정확)", "claude"), ("none  (OCR 없이 이미지만)", "none")]
+ENGINES = [("p2t  (로컬, 무료, 추천)", "p2t"), ("rapid  (로컬, 무료, 폴백)", "rapid"), ("claude  (API, 정확)", "claude"), ("none  (OCR 없이 이미지만)", "none")]
 MATH_MODES = [("이미지 + OCR 결과", "both"), ("OCR 결과만", "latex"), ("이미지만", "image")]
 DOC_TYPES = [("자동 판별", "auto"), ("논문", "paper"), ("일반 문서 (책·매뉴얼·보고서)", "document")]
 
@@ -740,7 +740,7 @@ def launch_gui() -> int:
             if running:
                 self.progress.configure(mode="indeterminate")
                 self.progress.start(12)
-                self.status_var.set("변환 중 … (첫 실행은 수식 OCR 모델 171 MB를 내려받습니다)")
+                self.status_var.set("변환 중 … (첫 실행은 수식 OCR 모델 120 MB를 내려받습니다)")
             else:
                 self.progress.stop()
                 self.progress.configure(mode="determinate", value=0)
@@ -789,7 +789,7 @@ def launch_gui() -> int:
             except Exception:
                 data = {}
             self.format_var.set(data.get("format", "docx"))
-            self.engine_var.set(next((t for t, v in ENGINES if v == data.get("engine", "rapid")), ENGINES[0][0]))
+            self.engine_var.set(next((t for t, v in ENGINES if v == data.get("engine", "p2t")), ENGINES[0][0]))
             self.mode_var.set(next((t for t, v in MATH_MODES if v == data.get("math_mode", "both")), MATH_MODES[0][0]))
             self.doctype_var.set(next((t for t, v in DOC_TYPES if v == data.get("doc_type", "auto")), DOC_TYPES[0][0]))
             self.beside_var.set(data.get("beside", True))

@@ -2,7 +2,10 @@
 
 Engines
 -------
-* ``rapid``  - RapidLaTeXOCR (ONNX port of pix2tex / LaTeX-OCR). Local, CPU, free.
+* ``p2t``    - Pix2Text MFR 1.5 (TrOCR on onnxruntime, see mfr_onnx.py). Local, CPU, free, the
+               default. Reads whole multi-line equations; 120 MB of weights are fetched on first use.
+* ``rapid``  - RapidLaTeXOCR (ONNX port of pix2tex / LaTeX-OCR). Local, CPU, free; the fallback
+               when the p2t model is not available.
                Single-line model, so multi-line equations are split into rows first.
 * ``claude`` - Claude vision (Anthropic API). Much more accurate, handles multi-line
                equations natively. Needs ``pip install anthropic`` and ``ANTHROPIC_API_KEY``.
@@ -39,11 +42,19 @@ TEXT_FLAGS = pymupdf.TEXTFLAGS_DICT & ~pymupdf.TEXT_PRESERVE_IMAGES
 
 # ----------------------------------------------------------------------------- image helpers
 
-def render(page: pymupdf.Page, rect, zoom: float) -> Image.Image:
+def render(page: pymupdf.Page, rect, zoom: float, mask=None) -> Image.Image:
+    """Grey image of `rect` at `zoom`. `mask`: page rectangles painted white first (an equation
+    number that sits inside the region on a row of its own)."""
     clip = pymupdf.Rect(rect) & page.rect
     pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), clip=clip, alpha=False)
     mode = "RGB" if pix.n == 3 else ("L" if pix.n == 1 else "RGBA")
-    return Image.frombytes(mode, (pix.width, pix.height), pix.samples).convert("L")
+    img = Image.frombytes(mode, (pix.width, pix.height), pix.samples).convert("L")
+    for r in mask or ():
+        r = pymupdf.Rect(r) & clip
+        if not r.is_empty:
+            img.paste(255, (int((r.x0 - clip.x0) * zoom), int((r.y0 - clip.y0) * zoom),
+                            int(round((r.x1 - clip.x0) * zoom)), int(round((r.y1 - clip.y0) * zoom))))
+    return img
 
 
 def ink_mask(img: Image.Image, thresh: int = 200) -> np.ndarray:
@@ -189,14 +200,21 @@ def clean_latex(s: str) -> str:
     return s.strip()
 
 
+def _unescaped_braces(s: str) -> str:
+    """The string without \\\\ (row breaks) and without the escaped braces \\{ \\} - what is left
+    are the grouping braces. The row break goes first: "\\\\{" is a break and a group, not an
+    escaped brace."""
+    return s.replace("\\\\", "").replace("\\{", "").replace("\\}", "")
+
+
 def _brace_counts(s: str):
-    s = s.replace("\\{", "").replace("\\}", "")
+    s = _unescaped_braces(s)
     return s.count("{"), s.count("}")
 
 
 def braces_balanced(s: str) -> bool:
     depth = 0
-    for ch in s.replace("\\{", "").replace("\\}", ""):
+    for ch in _unescaped_braces(s):
         if ch == "{":
             depth += 1
         elif ch == "}":
@@ -229,7 +247,9 @@ def looks_garbage(s: str, max_len: int = 600) -> bool:
         return True
     if s.count(r"\qquad") >= 4 or s.count(r"\quad") >= 8:
         return True
-    if len(re.findall(r"\\(?:hat|widehat|tilde|widetilde|dot|bar|overline)\{", s)) > 14:
+    # accents pile up when a glyph cluster is misread; a real multi-line equation has more of
+    # them, so the limit is per line (paper-01 eq. (2): 16 accents in two lines)
+    if len(re.findall(r"\\(?:hat|widehat|tilde|widetilde|dot|bar|overline)\{", s)) > 14 * (s.count("\\\\") + 1):
         return True
     if not braces_balanced(s) or not environments_balanced(s):
         return True
@@ -315,20 +335,24 @@ def hint_similarity(latex: str, hint: str) -> float:
     a, b = _hint_letters(hint), _latex_letters(latex)
     if len(a) < 3:
         return 1.0
-    return difflib.SequenceMatcher(None, a, b).ratio()
+    return difflib.SequenceMatcher(None, a, b, autojunk=False).ratio()   # autojunk hurts > 200 chars
 
 
 # ----------------------------------------------------------------------------- agreement between scales
 
 _STRIP_CMDS = re.compile(r"\\(?:left|right|[bB]igg?[lr]?|boldsymbol|mathbf|bm|mathrm|mathit|text|textrm|"
-                         r"operatorname|displaystyle|textstyle|scriptstyle|limits|nolimits)\b")
+                         r"operatorname|displaystyle|textstyle|scriptstyle|limits|nolimits|"
+                         r"mathsf|pmb|sf|tt|it)\b")
 _SPACE_CMDS = re.compile(r"\\[,;:! ]|\\quad|\\qquad|~|\\\\")
 _FUNC_CMDS = re.compile(r"\\(min|max|sin|cos|tan|log|ln|exp|det|lim)\b")
 # same glyph, different spelling (a person and an engine pick either)
 _SYNONYMS = {"\\widetilde": "\\tilde", "\\widehat": "\\hat", "\\overline": "\\bar",
-             "\\dfrac": "\\frac", "\\tfrac": "\\frac", "\\dots": "\\ldots", "\\cdots": "\\ldots"}
+             "\\dfrac": "\\frac", "\\tfrac": "\\frac", "\\cfrac": "\\frac",
+             "\\dots": "\\ldots", "\\cdots": "\\ldots"}
 _SYNONYM_RE = re.compile("|".join(re.escape(k) for k in _SYNONYMS) + r"(?![A-Za-z])")
 AGREE_OK = 1.0                # two render scales read the same thing (after normalize_latex): accept, stop
+AGREE_LOW = 0.9               # scales that agree less than this flag the equation (a stricter bar than
+                              # CONFIDENCE_LOW: the scales of a wrong reading still agree 0.85-0.9)
 
 
 def normalize_latex(s: str) -> str:
@@ -338,8 +362,9 @@ def normalize_latex(s: str) -> str:
     Used to compare results across render scales and against a golden set (tools/bench_mathocr.py)."""
     s = re.sub(r"\\tag\*?\{[^}]*\}", "", s or "")
     s = re.sub(r"\\(?:begin|end)\{[a-zA-Z*]+\}", "", s)
+    s = _SPACE_CMDS.sub("", s)                          # first: "\\\\{" is a row break, not \\{
     s = s.replace("\\{", "\\lbrace ").replace("\\}", "\\rbrace ")
-    s = _SPACE_CMDS.sub("", s)
+    s = s.replace("\\operatorname*", "\\operatorname")
     s = _STRIP_CMDS.sub("", s)
     s = _FUNC_CMDS.sub(r"\1", s)
     s = _SYNONYM_RE.sub(lambda m: _SYNONYMS[m.group(0)], s)
@@ -353,21 +378,23 @@ def agreement(a: str, b: str) -> float:
     a, b = normalize_latex(a), normalize_latex(b)
     if not a or not b:
         return 0.0
-    return difflib.SequenceMatcher(None, a, b).ratio()
+    return difflib.SequenceMatcher(None, a, b, autojunk=False).ratio()   # autojunk hurts > 200 chars
 
 
-def pick_by_agreement(latexes: list) -> tuple:
+def pick_by_agreement(latexes: list, zooms=None) -> tuple:
     """(index of the reading to keep, confidence) for the readings of one equation at several
-    render scales. The reading that agrees best with another one wins; ties go to the later
-    (larger) scale. Confidence = that best pairwise agreement; 1.0 for a single reading, which
-    cannot be judged. Pure: used by the tests."""
+    render scales. The reading that agrees best with another one wins; ties go to the largest
+    scale (`zooms`, one per reading) or, without scales, to the later reading. Confidence = that
+    best pairwise agreement; 1.0 for a single reading, which cannot be judged. Pure: used by the
+    tests."""
     if not latexes:
         return -1, 0.0
     if len(latexes) == 1:
         return 0, 1.0
     scores = [max(agreement(latexes[i], latexes[j]) for j in range(len(latexes)) if j != i)
               for i in range(len(latexes))]
-    best = max(range(len(latexes)), key=lambda i: (scores[i], i))
+    rank = (lambda i: (scores[i], zooms[i], i)) if zooms else (lambda i: (scores[i], i))
+    best = max(range(len(latexes)), key=rank)
     return best, scores[best]
 
 
@@ -416,6 +443,9 @@ class OCRCache:
 class MathEngine:
     name = "base"
     multiline = False           # True: engine accepts whole multi-line equation images
+    multi_zoom = False          # True: cheap enough to read a region at several render scales
+    default_zooms = None        # render scales tried in order when the caller passes none
+    deadline = None             # time.time() by which the current equation must be done (set by EquationOCR)
 
     def recognize(self, img: Image.Image, hint: str = "") -> Optional[str]:
         raise NotImplementedError
@@ -424,6 +454,7 @@ class MathEngine:
 class RapidEngine(MathEngine):
     """RapidLaTeXOCR (ONNX, CPU). First call downloads ~170 MB of weights."""
     name = "rapid"
+    multi_zoom = True
 
     def __init__(self, max_tokens: int = 320):
         self.max_tokens = max_tokens
@@ -444,6 +475,31 @@ class RapidEngine(MathEngine):
         model = self._load()
         res, _elapsed = model(png_bytes(img.convert("RGB")))
         return res or None
+
+
+class Pix2TextEngine(MathEngine):
+    """Pix2Text MFR 1.5 on onnxruntime (pdf2word.mfr_onnx): whole multi-line equations, CPU,
+    no torch. The first use fetches 120 MB of weights into mfr_onnx.models_dir()."""
+    name = "p2t"
+    multiline = True
+    multi_zoom = True
+    default_zooms = (4.0, 3.0, 2.0)     # 4x (~300 dpi, what Pix2Text renders) was best, 2x worst (decision record)
+
+    def __init__(self, model_dir=None, runner=None):
+        self.model_dir = model_dir
+        self._runner = runner
+
+    def load(self) -> "Pix2TextEngine":
+        """Fetch / verify the model files and open the sessions; raises when that fails."""
+        if self._runner is None:
+            from .mfr_onnx import MFRRunner
+            log.info("  loading Pix2Text MFR model ...")
+            self._runner = MFRRunner(self.model_dir)
+        self._runner.load()
+        return self
+
+    def recognize(self, img: Image.Image, hint: str = "") -> Optional[str]:
+        return self.load()._runner.recognize(img, deadline=self.deadline)
 
 
 class ClaudeEngine(MathEngine):
@@ -537,9 +593,18 @@ class ClaudeEngine(MathEngine):
 
 
 def build_engine(name: str, **kw) -> Optional[MathEngine]:
-    name = (name or "rapid").lower()
+    """The engine behind --math-engine; None for 'none'. 'p2t' loads its model right away and
+    falls back to rapid when that fails (offline, Hugging Face down), saying why in the log."""
+    name = (name or "p2t").lower()
     if name in ("none", "off", "image"):
         return None
+    if name == "p2t":
+        engine = Pix2TextEngine(model_dir=kw.get("model_dir"))
+        try:
+            return engine.load()
+        except Exception as exc:
+            log.warning("p2t 모델을 쓸 수 없어 rapid로 대체: %s", exc)
+            name = "rapid"
     if name == "rapid":
         return RapidEngine(max_tokens=kw.get("max_tokens", 320))
     if name == "claude":
@@ -560,17 +625,24 @@ class EquationResult:
     cached: bool = False
     seconds: float = 0.0
     confidence: float = 1.0      # similarity to the PDF text layer (1.0 = no text layer to compare)
+    by_agreement: bool = False   # confidence is the agreement between render scales instead
 
     @property
     def uncertain(self) -> bool:
-        return self.latex is not None and self.confidence < CONFIDENCE_LOW
+        low = AGREE_LOW if self.by_agreement else CONFIDENCE_LOW
+        return self.latex is not None and self.confidence < low
 
 
 class EquationOCR:
-    def __init__(self, engine: Optional[MathEngine], zooms=(2.0, 3.0, 4.0),
+    DEFAULT_ZOOMS = (2.0, 3.0, 4.0)
+    REGION_BUDGET = 90.0         # seconds per equation over all render scales (p2t decodes slowly on long input)
+
+    def __init__(self, engine: Optional[MathEngine], zooms=None,
                  cache: bool = True, min_gap_pt: float = 3.0):
         self.engine = engine
-        self.zooms = tuple(zooms) or (2.0,)
+        if not zooms:
+            zooms = getattr(engine, "default_zooms", None) or self.DEFAULT_ZOOMS
+        self.zooms = tuple(float(z) for z in zooms)
         self.cache = OCRCache(cache)
         self.min_gap_pt = min_gap_pt
         self.calls = 0
@@ -594,6 +666,9 @@ class EquationOCR:
         except Exception as exc:
             log.warning("  OCR failed: %s", exc)
             raw = None
+        if raw is None:                       # failure or time budget: not a result, so not cached
+            log.debug("  OCR gave nothing (%.1fs)", time.time() - t0)
+            return None
         latex = hint_fixes(clean_latex(raw or ""), hint)
         latex = fix_braces(latex)
         if looks_garbage(latex):
@@ -605,37 +680,41 @@ class EquationOCR:
         return latex or None
 
     # -- page region --------------------------------------------------------
-    def recognize_region(self, page: pymupdf.Page, rect, hint: str = "") -> EquationResult:
+    def recognize_region(self, page: pymupdf.Page, rect, hint: str = "", mask=None) -> EquationResult:
+        """OCR of one display equation; `mask` lists page rectangles to paint out first (an
+        equation number inside the region).
+
+        * no engine: the crop only.
+        * an engine that must not be called often (Claude): one reading at the first scale, a
+          second one only when the first returns nothing; confidence = text-layer match.
+        * a local engine: with a usable text layer the scales are tried in order until one
+          matches it well (CONFIDENCE_OK); without one (image, vector drawing or garbled text
+          layer - docs/issues/garbled-text-layer.md) the scales are compared with each other."""
         t0 = time.time()
         rect = pymupdf.Rect(rect)
-        base_zoom = self.zooms[0]
-        base = tight_crop(render(page, rect, max(base_zoom, 2.0)))
+        base = tight_crop(render(page, rect, max(self.zooms[0], 2.0), mask))
         if base is None:
             return EquationResult(None, None, 0)
         if self.engine is None:
             return EquationResult(None, base, 1, seconds=time.time() - t0)
-
-        if hint and not hint_usable(hint):
-            # garbled text layer (docs/issues/garbled-text-layer.md): it can neither verify the
-            # result nor choose the render scale, so the scales are compared with each other
-            if not self.engine.multiline:
-                return self._recognize_by_agreement(page, rect, base, t0)
-            hint = ""
-
-        if self.engine.multiline:
-            latex = self.recognize_image(base, hint)
+        self.engine.deadline = t0 + self.REGION_BUDGET
+        usable = hint_usable(hint)
+        if not self.engine.multi_zoom:
+            latex, n = self._read(page, rect, self.zooms[0], hint if usable else "", mask)
             if latex is None and len(self.zooms) > 1:
-                alt = tight_crop(render(page, rect, self.zooms[1]))
-                latex = self.recognize_image(alt, hint) if alt is not None else None
+                latex, n = self._read(page, rect, self.zooms[1], hint if usable else "", mask)
             conf = hint_similarity(latex, hint) if latex else 0.0
-            return EquationResult(latex, base, 1, seconds=time.time() - t0, confidence=conf)
+            return EquationResult(latex, base, n or 1, seconds=time.time() - t0, confidence=conf)
+        if not usable:
+            return self._recognize_by_agreement(page, rect, base, t0, mask)
 
-        # line-based engine: split the region into text rows, OCR each row. The result is
-        # checked against the PDF text layer; a poor match is retried at the other render
-        # scales and the best-matching candidate wins.
+        # the text layer says how good a reading is: a poor match is retried at the other
+        # render scales and the best-matching candidate wins
         best_latex, best_conf, best_lines = None, -1.0, 0
-        for zoom in self.zooms:
-            latex, n_lines = self._recognize_lines(page, rect, zoom, hint)
+        for i, zoom in enumerate(self.zooms):
+            if i and time.time() > self.engine.deadline:     # always one reading, more while there is time
+                break
+            latex, n_lines = self._read(page, rect, zoom, hint, mask)
             if not latex:
                 continue
             conf = hint_similarity(latex, hint)
@@ -647,28 +726,42 @@ class EquationOCR:
             return EquationResult(None, base, 0, seconds=time.time() - t0)
         return EquationResult(best_latex, base, best_lines, seconds=time.time() - t0, confidence=best_conf)
 
-    def _recognize_by_agreement(self, page: pymupdf.Page, rect: pymupdf.Rect, base, t0: float) -> EquationResult:
-        """A garbled text layer cannot pick the best render scale, so the scales are compared with
+    def _recognize_by_agreement(self, page: pymupdf.Page, rect: pymupdf.Rect, base, t0: float,
+                                mask=None) -> EquationResult:
+        """No usable text layer to pick the best render scale, so the scales are compared with
         each other: read at the first two, stop when they agree (AGREE_OK), else read the rest and
         keep the reading the others agree with most (pick_by_agreement). The agreement is the
         confidence - a low one flags the equation like a poor text-layer match would."""
-        latexes, n_lines = [], []
-        for zoom in self.zooms:
-            latex, n = self._recognize_lines(page, rect, zoom, "")
+        latexes, n_lines, zooms = [], [], []
+        for i, zoom in enumerate(self.zooms):
+            if i and time.time() > self.engine.deadline:
+                break
+            latex, n = self._read(page, rect, zoom, "", mask)
             if latex:
                 latexes.append(latex)
                 n_lines.append(n)
+                zooms.append(zoom)
             if len(latexes) >= 2 and agreement(latexes[-1], latexes[-2]) >= AGREE_OK:
                 break
         if not latexes:
             return EquationResult(None, base, 0, seconds=time.time() - t0)
-        i, conf = pick_by_agreement(latexes)
+        i, conf = pick_by_agreement(latexes, zooms)
         log.debug("  scales agree %.2f (%d reading(s))", conf, len(latexes))
-        return EquationResult(latexes[i], base, n_lines[i], seconds=time.time() - t0, confidence=conf)
+        return EquationResult(latexes[i], base, n_lines[i], seconds=time.time() - t0, confidence=conf,
+                              by_agreement=True)
 
-    def _recognize_lines(self, page: pymupdf.Page, rect: pymupdf.Rect, zoom: float, hint: str):
+    def _read(self, page: pymupdf.Page, rect: pymupdf.Rect, zoom: float, hint: str, mask=None):
+        """One reading of the region at `zoom`: the whole image for an engine that takes
+        multi-line equations, row by row otherwise. (latex or None, number of lines)."""
+        if self.engine.multiline:
+            img = tight_crop(render(page, rect, zoom, mask))
+            latex = self.recognize_image(img, hint) if img is not None else None
+            return latex, (latex.count("\\\\") + 1) if latex else 0
+        return self._recognize_lines(page, rect, zoom, hint, mask)
+
+    def _recognize_lines(self, page: pymupdf.Page, rect: pymupdf.Rect, zoom: float, hint: str, mask=None):
         """Split the region into rows at `zoom`, OCR each (other scales as fallback per row)."""
-        full = render(page, rect, zoom)
+        full = render(page, rect, zoom, mask)
         bands = split_rows(full, min_gap=max(3, int(round(self.min_gap_pt * zoom))))
         if not bands:
             return None, 0
@@ -679,7 +772,7 @@ class EquationOCR:
         for lr in line_rects:
             latex = None
             for z in order:
-                img = tight_crop(render(page, lr, z))
+                img = tight_crop(render(page, lr, z, mask))
                 if img is None:
                     continue
                 latex = self.recognize_image(img, hint)

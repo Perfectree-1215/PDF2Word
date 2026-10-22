@@ -113,6 +113,10 @@ class Converter:
 
     @property
     def engine_name(self) -> str:
+        """The engine in use: the one actually built (p2t may have fallen back to rapid), else
+        the one asked for."""
+        if self._engine_built:
+            return self._engine.name if self._engine else "none"
         return "none" if self.opt.math_engine in ("none", "off", "image") else self.opt.math_engine
 
     # -- public -------------------------------------------------------------
@@ -603,9 +607,9 @@ class _DocContext:
         # the number may sit outside the box, at the right margin (the strip reaches the page edge;
         # `box` keeps find_labels from taking the other column's numbers on two-column pages)
         labels = find_labels(page, pymupdf.Rect(rect.x0, rect.y0 - 3, page.rect.x1, rect.y1 + 3), box=rect)
-        regions = self._split_regions(rect, labels)
+        regions = self._split_regions(rect, labels, page)
         blocks = []
-        for region, label in regions:
+        for region, label, mask in regions:
             hint = map_pua(page.get_text("text", clip=region) or "").strip()
             unverified = bool(hint) and not hint_usable(hint)
             if unverified:
@@ -614,7 +618,7 @@ class _DocContext:
                 # equation without a text layer
                 self.stats["eq_unverified"] += 1
             self.stats["eq_total"] += 1
-            result = self.conv.ocr.recognize_region(page, region, hint)
+            result = self.conv.ocr.recognize_region(page, region, hint, mask)
             if result.cached:
                 self.stats["eq_cached"] += 1
             blocks.append(self._format_equation(result, label, "" if unverified else hint, page, region,
@@ -622,16 +626,35 @@ class _DocContext:
         return "\n" + "\n".join(blocks) + "\n"
 
     @staticmethod
-    def _split_regions(rect: pymupdf.Rect, labels: list) -> list:
-        """A formula box may stack several numbered equations: one region per label."""
+    def _split_regions(rect: pymupdf.Rect, labels: list, page=None) -> list:
+        """A formula box may stack several numbered equations: one region per label,
+        [(region, label, mask)]. A number on the equation's own text row is cut off at its left
+        edge. A number on a row of its own (under the end of a tall equation - paper-01 eq. (3))
+        keeps the region's full width, because cutting there removed the end of the equation,
+        and is painted out through `mask` instead. Without `page` every number is cut off."""
         if not labels:
-            return [(rect, None)]
+            return [(rect, None, [])]
+        rows = []                                        # text rows that are not a number
+        if page is not None:
+            try:
+                blocks = page.get_text("dict", clip=rect, flags=TEXT_FLAGS)["blocks"]
+            except Exception:
+                blocks = []
+            for block in blocks:
+                for line in block.get("lines", []):
+                    text = "".join(s["text"] for s in line["spans"])
+                    if text.strip() and not LABEL_RE.match(label_text(text)):
+                        rows.append(pymupdf.Rect(line["bbox"]))
         centers = [(lr.y0 + lr.y1) / 2 for _, lr in labels]
         bounds = [rect.y0] + [(centers[i] + centers[i + 1]) / 2 for i in range(len(centers) - 1)] + [rect.y1]
         regions = []
         for i, (label, lr) in enumerate(labels):
-            x1 = min(rect.x1, lr.x0 - 2) if lr.x0 - 2 > rect.x0 + 10 else rect.x1
-            regions.append((pymupdf.Rect(rect.x0, bounds[i], x1, bounds[i + 1]), label))
+            region = pymupdf.Rect(rect.x0, bounds[i], rect.x1, bounds[i + 1])
+            own_row = page is None or any(
+                r.x0 < lr.x0 and min(r.y1, lr.y1) - max(r.y0, lr.y0) > 0.5 * lr.height for r in rows)
+            if own_row and lr.x0 - 2 > rect.x0 + 10:
+                region.x1 = min(rect.x1, lr.x0 - 2)
+            regions.append((region, label, [lr] if lr.intersects(region) else []))
         return regions
 
     def _format_equation(self, result: EquationResult, label: Optional[str], hint: str, page, region,
@@ -681,7 +704,7 @@ class _DocContext:
         self.eq_seq += 1
         base = f"eq-{re.sub(r'[^A-Za-z0-9-]+', '-', label)}" if label else f"eq-u{self.eq_seq:02d}"
         fname = self._unique(base) + ".png"
-        dpi = int(round(72 * max(float(self.opt.math_zooms[0]) if self.opt.math_zooms else 2.0, 2.0)))
+        dpi = int(round(72 * max(self.conv.ocr.zooms[0], 2.0)))
         img.save(self.asset_dir / fname, dpi=(dpi, dpi))   # physical size survives into Word
         return fname
 

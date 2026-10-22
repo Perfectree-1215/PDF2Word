@@ -8,10 +8,12 @@ import sys
 from pathlib import Path
 
 import pymupdf
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from pdf2word.mathocr import find_labels  # noqa: E402
+from pdf2word.converter import _DocContext  # noqa: E402
+from pdf2word.mathocr import find_labels, ink_mask, render  # noqa: E402
 
 LEFT_BOX = pymupdf.Rect(42, 445, 294, 466)        # paper-01 p.2 eq. (1): spans the left column
 RIGHT_BOX = pymupdf.Rect(311, 445, 563, 466)      # a right-column equation at the same height
@@ -52,3 +54,45 @@ def test_other_columns_number_is_not_taken():
 def test_garbled_number_counts():
     page = _two_column_page(left_label="ð2Þ")    # 'ð2Þ'
     assert [l for l, _ in find_labels(page, _strip(LEFT_BOX, page), box=LEFT_BOX)] == ["2"]
+
+
+# ----------------------------------------------------------------------------- where the number sits
+
+def _numbered_page(label_y: float):
+    """A tall equation (two text rows) in a box; its number '(3)' at `label_y`."""
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=794)
+    page.insert_text((50, 460), "dW/dt = F(W) + G(W)", fontsize=10)
+    page.insert_text((50, 476), "+ H(W)", fontsize=10)
+    page.insert_text((270, label_y), "(3)", fontsize=10)
+    return page
+
+
+BOX = pymupdf.Rect(42, 445, 294, 490)
+
+
+def test_number_on_the_equations_row_is_cut_off():
+    page = _numbered_page(label_y=476)                     # same row as the equation's last line
+    labels = find_labels(page, BOX)
+    (region, label, mask), = _DocContext._split_regions(BOX, labels, page)
+    assert label == "3" and region.x1 == pytest.approx(labels[0][1].x0 - 2) and mask == []
+
+
+def test_number_on_its_own_row_keeps_the_width_and_is_masked():
+    # paper-01 eq. (3): the number sits below the end of a tall equation; cutting the region at
+    # its left edge removed the equation's closing ')^2 ]'
+    page = _numbered_page(label_y=488)
+    labels = find_labels(page, BOX)
+    lr = labels[0][1]
+    (region, label, mask), = _DocContext._split_regions(BOX, labels, page)
+    assert label == "3" and region.x1 == BOX.x1 and mask == [lr]
+    # the number is painted out of the render, the equation is not
+    plain, masked = render(page, region, 2.0), render(page, region, 2.0, mask)
+    x0, y0 = int((lr.x0 - region.x0) * 2), int((lr.y0 - region.y0) * 2)
+    x1, y1 = int((lr.x1 - region.x0) * 2) + 1, int((lr.y1 - region.y0) * 2) + 1
+    assert ink_mask(plain)[y0:y1, x0:x1].any() and not ink_mask(masked)[y0:y1, x0:x1].any()
+    assert ink_mask(masked)[:, :x0 - 4].any()
+    # without a page every number is cut off (the old behaviour, used by callers without one)
+    (region, _, mask), = _DocContext._split_regions(BOX, labels)
+    assert region.x1 < lr.x0 and mask == []
+    assert _DocContext._split_regions(BOX, [], page) == [(BOX, None, [])]

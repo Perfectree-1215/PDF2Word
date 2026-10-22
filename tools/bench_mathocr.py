@@ -43,6 +43,7 @@ from pdf2word.mathocr import (CONFIDENCE_LOW, LABEL_RE, EquationOCR, build_engin
                               hint_usable, label_text, normalize_latex, png_bytes)
 from pdf2word.outline import parse_pages  # noqa: E402
 from pdf2word.symbols import map_pua  # noqa: E402
+from pdf2word.utils import setup_logging  # noqa: E402
 
 log = logging.getLogger("pdf2word")
 GOLDEN_NOTE = ("Open report.html, correct 'latex' of each equation against the original crop and set "
@@ -53,7 +54,7 @@ GOLDEN_NOTE = ("Open report.html, correct 'latex' of each equation against the o
 # ----------------------------------------------------------------------------- equation regions
 
 def equation_regions(doc: pymupdf.Document, pages=None, lighten: bool = True) -> list:
-    """[(page_number_1based, region Rect, hint, label, text_layer_garbled)] for every display
+    """[(page_number_1based, region Rect, hint, label, text_layer_garbled, mask)] for every display
     equation, found with the same layout analysis, label splitting and text-layer check as the
     converter. A garbled hint is passed on as it is: recognize_region handles it."""
     from pdf2word.converter import _DocContext, _patch_pymupdf4llm_pua
@@ -80,10 +81,10 @@ def equation_regions(doc: pymupdf.Document, pages=None, lighten: bool = True) ->
             if LABEL_RE.match(label_text(inside)) and rect.width < 60:
                 continue                      # an equation number alone (equation drawn as graphics)
             labels = find_labels(page, pymupdf.Rect(rect.x0, rect.y0 - 3, page.rect.x1, rect.y1 + 3), box=rect)
-            for region, label in _DocContext._split_regions(rect, labels):
+            for region, label, mask in _DocContext._split_regions(rect, labels, page):
                 hint = map_pua(page.get_text("text", clip=region) or "").strip()
                 garbled = bool(hint) and not hint_usable(hint)
-                out.append((pno + 1, region, hint, label, garbled))
+                out.append((pno + 1, region, hint, label, garbled, mask))
     return out
 
 
@@ -110,7 +111,7 @@ def run(doc, regions, engines: dict, zooms, out_dir: Path, warmup: bool = True) 
     out_dir.mkdir(parents=True, exist_ok=True)
     ocrs = {n: EquationOCR(e, zooms=zooms, cache=False) for n, e in engines.items()}
     rows = []
-    for idx, (pno, region, hint, label, garbled) in enumerate(regions, 1):
+    for idx, (pno, region, hint, label, garbled, mask) in enumerate(regions, 1):
         page = doc[pno - 1]
         tag = f"eq-{idx:03d}-p{pno}" + (f"-({label})" if label else "")
         row = {"index": idx, "page": pno, "label": label, "hint": "" if garbled else hint,
@@ -119,8 +120,8 @@ def run(doc, regions, engines: dict, zooms, out_dir: Path, warmup: bool = True) 
         crop_saved = False
         for name, ocr in ocrs.items():
             if warmup and idx == 1:
-                ocr.recognize_region(page, region, hint)     # model load / first-call overhead
-            result = ocr.recognize_region(page, region, hint)
+                ocr.recognize_region(page, region, hint, mask)     # model load / first-call overhead
+            result = ocr.recognize_region(page, region, hint, mask)
             if result.image is not None and not crop_saved:
                 fname = out_dir / f"{tag}.png"
                 fname.write_bytes(png_bytes(result.image))
@@ -128,7 +129,7 @@ def run(doc, regions, engines: dict, zooms, out_dir: Path, warmup: bool = True) 
                 crop_saved = True
             row["engines"][name] = {
                 "latex": result.latex, "confidence": round(result.confidence, 3),
-                "seconds": round(result.seconds, 2), "lines": result.lines,
+                "uncertain": result.uncertain, "seconds": round(result.seconds, 2), "lines": result.lines,
             }
             print(f"  {tag:<22} {name:<8} {result.seconds:5.1f}s  conf {result.confidence:4.2f}  "
                   f"{(result.latex or '(none)')[:70]}")
@@ -136,6 +137,12 @@ def run(doc, regions, engines: dict, zooms, out_dir: Path, warmup: bool = True) 
 
 
 # ----------------------------------------------------------------------------- golden set
+
+def is_uncertain(entry: dict) -> bool:
+    """The engine entry of a row would carry the reader's warning (EquationResult.uncertain; rows of
+    an older results.json have no such key and use the text-layer threshold)."""
+    return bool(entry.get("uncertain", entry.get("confidence", 1.0) < CONFIDENCE_LOW))
+
 
 def golden_key(page, label) -> tuple:
     return int(page), str(label or "")
@@ -185,7 +192,7 @@ def score_against_golden(rows: list, golden: dict) -> dict:
             if not e:
                 continue
             got = normalize_latex(e["latex"] or "")
-            sim = difflib.SequenceMatcher(None, want, got).ratio() if want else 0.0
+            sim = difflib.SequenceMatcher(None, want, got, autojunk=False).ratio() if want else 0.0
             e["golden_sim"] = round(sim, 3)
             e["golden_exact"] = bool(want) and want == got
             s = scored[n]
@@ -213,7 +220,7 @@ def summarize(rows: list) -> dict:
             "equations": len(results),
             "recognized": len(got),
             "failed": len(results) - len(got),
-            "uncertain": sum(1 for x in got if x["confidence"] < CONFIDENCE_LOW),
+            "uncertain": sum(1 for x in got if is_uncertain(x)),
             "mean_confidence": round(statistics.fmean(confs), 3) if confs else 0.0,
             "median_seconds": round(statistics.median(secs), 2) if secs else 0.0,
             "total_seconds": round(sum(secs), 1),
@@ -269,7 +276,7 @@ def write_markdown(path: Path, pdf: Path, rows: list, summary: dict, golden_scor
             if not e:
                 continue
             latex = (e["latex"] or "(none)").replace("|", "\\|").replace("\n", " ")
-            flag = " ⚠" if e["latex"] and e["confidence"] < CONFIDENCE_LOW else ""
+            flag = " ⚠" if e["latex"] and is_uncertain(e) else ""
             gold = ("✓" if e.get("golden_exact") else f"{e['golden_sim']:.2f}") if "golden_sim" in e else "–"
             lines.append(f"| {n} | {e['confidence']:.2f}{flag} | {gold} | {e['seconds']:.1f} | `{latex}` |")
         lines.append("")
@@ -327,7 +334,7 @@ def write_html(path: Path, pdf: Path, rows: list, summary: dict, golden_scores: 
             e = r["engines"].get(n) or {}
             latex = e.get("latex")
             cls = ("none" if not latex else "exact" if e.get("golden_exact")
-                   else "low" if e["confidence"] < CONFIDENCE_LOW else "")
+                   else "low" if is_uncertain(e) else "")
             body = f"$${latex}$$<hr><code>{html.escape(latex)}</code>" if latex else "<i>no result</i>"
             gold = f" · golden {e['golden_sim']:.2f}" if "golden_sim" in e else ""
             h.append(f"<td class='{cls}'>{body}<br><small>conf {e.get('confidence', 0):.2f} · "
@@ -372,7 +379,7 @@ def finish(out_dir: Path, golden_path: Path, pdf: Path, rows: list, summary: dic
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument("pdf", type=Path)
-    p.add_argument("--engines", default="rapid", help="comma list of math engines (rapid, claude)")
+    p.add_argument("--engines", default="p2t", help="comma list of math engines (p2t, rapid, claude)")
     p.add_argument("--pages", help="PDF page range, 1-based, e.g. 3-8,12")
     p.add_argument("-o", "--out", type=Path, help="folder for everything (default: bench/<pdf stem>)")
     p.add_argument("--golden", type=Path, help="golden set to score against (default: <out>/golden.json)")
@@ -380,7 +387,8 @@ def main(argv=None) -> int:
                    help="no OCR: re-score the last results.json against golden.json and rewrite the reports")
     p.add_argument("--rewrite-golden", action="store_true",
                    help="replace golden.json with a fresh skeleton from this run (loses hand edits)")
-    p.add_argument("--zooms", default="2,3,4", help="render scales tried in order (rapid engine)")
+    p.add_argument("--zooms", help="render scales tried in order (default: the engine's own order, "
+                   "rapid 2,3,4 / p2t 4,3,2)")
     p.add_argument("--limit", type=int, default=0, help="stop after N equations")
     p.add_argument("--no-lighten", action="store_true")
     p.add_argument("--no-warmup", action="store_true", help="count model loading in the first equation's time")
@@ -390,7 +398,7 @@ def main(argv=None) -> int:
     p.add_argument("-v", "--verbose", action="store_true")
     args = p.parse_args(argv)
 
-    logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO, format="%(message)s")
+    setup_logging(args.verbose)                       # pdf2word logger only; PIL / onnxruntime stay quiet
     out_dir = args.out or Path("bench") / args.pdf.stem
     golden_path = args.golden or out_dir / "golden.json"
 
@@ -405,7 +413,7 @@ def main(argv=None) -> int:
 
     if not args.pdf.exists():
         p.error(f"PDF not found: {args.pdf}")
-    zooms = tuple(float(z) for z in args.zooms.split(",") if z.strip()) or (2.0, 3.0, 4.0)
+    zooms = tuple(float(z) for z in args.zooms.split(",") if z.strip()) if args.zooms else None
     names = [n.strip() for n in args.engines.split(",") if n.strip()]
 
     doc = pymupdf.open(args.pdf)

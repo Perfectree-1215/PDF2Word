@@ -37,3 +37,13 @@ def test_pick_majority_and_confidence():
 def test_pick_edge_cases():
     assert pick_by_agreement([]) == (-1, 0.0)
     assert pick_by_agreement([GOOD]) == (0, 1.0)                  # one reading: cannot judge
+
+
+def test_long_readings_are_not_penalised_by_difflib_autojunk():
+    # difflib marks frequent characters as junk once a string has > 200 characters, which made
+    # two nearly identical long readings look different (paper-01 eq. (2): 0.17 instead of 0.84)
+    a = r"\frac{\partial\bar{\rho}\tilde{Y}_{CO_{2}}}{\partial t}+" * 6
+    b = a.replace(r"\tilde{Y}", r"\bar{Y}", 1)
+    assert len(a) > 200
+    assert agreement(a, a) == 1.0
+    assert 0.95 < agreement(a, b) < 1.0

@@ -82,3 +82,20 @@ def test_golden_scoring_uses_verified_entries_only():
     g = score_against_golden(rows, golden)["rapid"]
     assert g["compared"] == 1 and g["exact"] == 1
     assert rows[1]["golden_status"] == "unverified" and "golden_sim" not in rows[1]["engines"]["rapid"]
+
+
+def test_normalize_latex_knows_the_p2t_spellings():
+    assert normalize_latex(r"\cfrac{a}{b}") == normalize_latex(r"\frac{a}{b}")
+    assert normalize_latex(r"\operatorname*{min}") == normalize_latex("min")
+    assert normalize_latex(r"\sf x \mathsf{y} \pmb{z}") == "xyz"
+    assert normalize_latex(r"\Biggl[ x \Biggr]") == normalize_latex("[x]")
+    assert normalize_latex(r"\iota") != normalize_latex(r"\it ota")        # \it must not eat \iota
+
+
+def test_row_breaks_before_groups_are_not_escaped_braces():
+    # "\\\\{" is a row break followed by a group, which str.replace("\\{") used to misread
+    from pdf2word.mathocr import braces_balanced, looks_garbage
+    two_rows = r"\begin{aligned}{a=b}\\{=c+d}\end{aligned}"
+    assert braces_balanced(two_rows) and not looks_garbage(two_rows)
+    assert normalize_latex(two_rows) == normalize_latex("a=b =c+d")
+    assert normalize_latex(r"\{x\}") == normalize_latex(r"\lbrace x\rbrace")

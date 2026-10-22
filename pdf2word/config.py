@@ -54,8 +54,8 @@ class Options:
     lighten: bool = True                        # merge clusters of tiny images before layout analysis
 
     # --- equations ---------------------------------------------------------
-    math_engine: str = "rapid"                  # "rapid" | "claude" | "none"
-    math_zooms: tuple = (2.0, 3.0, 4.0)         # render scales tried in order
+    math_engine: str = "p2t"                    # "p2t" | "rapid" | "claude" | "none"
+    math_zooms: tuple | None = None             # render scales tried in order; None = the engine's own order (p2t 4,3,2 / rapid 2,3,4)
     math_max_tokens: int = 320                  # decoder length cap (rapid engine)
     math_mode: str = "both"                     # "both" (image + LaTeX below) | "latex" | "image"
     inline_image_math: bool = True              # OCR small images embedded in text lines

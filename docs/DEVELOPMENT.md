@@ -58,12 +58,12 @@ uv sync --locked --extra dev
 - 결과는 저장소 밖이나 `out/` 폴더(.gitignore에 있음)에 쓰세요. 변환된 `.md`는 루트에 두면 커밋 대상이 됩니다.
 - 수식 OCR 결과는 `%LOCALAPPDATA%\pdf2word\mathocr-cache.json`에 캐시되어 같은 PDF를 다시 돌리면 빠릅니다. 엔진이나 전처리를
   바꿔 결과를 새로 보고 싶으면 `--no-cache`. GUI 설정(`gui.json`)도 같은 폴더에 있습니다.
-- 첫 변환 때 RapidLaTeXOCR 모델(약 170 MB)을 내려받습니다. PyMuPDF Layout 모델은 패키지에 들어 있습니다.
+- 첫 변환 때 수식 OCR 모델을 내려받습니다: `p2t`(기본)는 Pix2Text MFR 1.5(약 120 MB, `%LOCALAPPDATA%\pdf2word\models\pix2text-mfr-1.5`, `PDF2WORD_MODELS`로 변경), 폴백 `rapid`는 RapidLaTeXOCR 모델(약 170 MB). PyMuPDF Layout 모델은 패키지에 들어 있습니다.
 
 ## 4. 테스트
 
 ```bash
-.venv\Scripts\python -m pytest tests -q      # 37개, 약 7초, 모델·네트워크 불필요
+.venv\Scripts\python -m pytest tests -q      # 57개, 약 7초, 모델·네트워크 불필요
 ```
 
 파일마다 `python tests/test_basic.py` 처럼 단독 실행도 됩니다.
@@ -78,6 +78,8 @@ uv sync --locked --extra dev
 | `tests/test_labels.py` | 합성 2단 페이지에서 식 번호 찾기(`find_labels`, 왼쪽 단·다른 단 번호 배제·깨진 번호) |
 | `tests/test_agreement.py` | 배율 간 일치도(`agreement`, `pick_by_agreement`)로 읽기 결과 고르기 |
 | `tests/test_bench.py` | `tools/bench_mathocr.py`의 LaTeX 정규화·골든 채점·요약 |
+| `tests/test_mfr_onnx.py` | Pix2Text MFR 러너(가짜 세션·토크나이저·다운로더): 탐욕 루프·상한·반복 중단·후처리·모델 폴더·해시 검증 |
+| `tests/test_p2t_engine.py` | p2t 엔진의 배치: 모델 로드 실패 → rapid 폴백, 엔진별 기본 배율, 전체 영역 읽기(스텁 엔진) |
 
 테스트용 PDF는 저작권 때문에 저장소에 없습니다. 실제 변환 확인에는 종류가 다른 PDF 세 가지를 쓰는 것이 좋습니다.
 개발 PC에서 기준으로 삼은 것은 **pdfTeX 논문**(MDPI *Minerals* 12-00480, CM/PazoMath 글꼴), **InDesign 논문**
@@ -92,8 +94,9 @@ Theory Guide로 확인했습니다. 새 PC에서는 같은 종류의 PDF를 아�
 | `main_gui.py` / `main_gui.bat` | tkinter GUI와 실행 스크립트. 인수가 있으면 CLI로 넘김. bat는 **ASCII만, CRLF**(`.gitattributes`가 보장) |
 | `pdf2word/cli.py`, `config.py` | 옵션 정의(`Options` dataclass)와 명령줄. 새 옵션은 두 곳에 같이 넣고 README 옵션 표를 갱신 |
 | `pdf2word/converter.py` | 파이프라인. `pymupdf4llm.to_markdown(page_chunks=True)` 결과의 `page_boxes`를 `_DocContext.render_page`가 클래스별로 처리(formula/picture/caption/text…) |
-| `pdf2word/mathocr.py` | 수식 박스 렌더링 → 줄 분할 → RapidLaTeXOCR/Claude → 검증(괄호·반복·텍스트 대조), 캐시. 깨진 텍스트 레이어 감지(`hint_usable`, `label_text`), 식 번호 찾기(`find_labels`, 2단 조판은 `box=` 필수), 레이어가 깨진 식의 배율 간 일치도 선택(`_recognize_by_agreement`, `normalize_latex`) |
-| `tools/bench_mathocr.py` | 한 PDF의 디스플레이 수식을 변환기와 같은 방법으로 찾아 엔진별 결과를 `report.md`/`report.html`(MathJax)/`results.json`으로 비교. PDF마다 `bench/<stem>/` 한 폴더에 `report.html`·`results.json`·크롭·`golden.json`(사람이 확정한 정답 LaTeX)을 두고, 같은 폴더의 `golden.json`과 정확 일치율·유사도를 냄(없으면 첫 실행이 틀을 만들고, `--rescore`는 OCR 없이 재채점) |
+| `pdf2word/mathocr.py` | 수식 박스 렌더링 → 줄 분할 → `p2t`(Pix2Text MFR, 기본; 모델을 못 쓰면 rapid로 대체)/RapidLaTeXOCR/Claude → 검증(괄호·반복·텍스트 대조), 캐시. 깨진 텍스트 레이어 감지(`hint_usable`, `label_text`), 식 번호 찾기(`find_labels`, 2단 조판은 `box=` 필수), 레이어가 깨진 식의 배율 간 일치도 선택(`_recognize_by_agreement`, `normalize_latex`) |
+| `pdf2word/mfr_onnx.py` | Pix2Text MFR 1.5 모델 파일 관리(내려받기·크기/sha256 검사·`PDF2WORD_MODELS`)와 onnxruntime 탐욕 디코딩 러너(torch 없음), 출력 후처리 |
+| `tools/bench_mathocr.py` | 한 PDF의 디스플레이 수식을 변환기와 같은 방법으로 찾아 `--engines`(기본 `p2t`) 엔진별 결과를 `report.md`/`report.html`(MathJax)/`results.json`으로 비교. PDF마다 `bench/<stem>/` 한 폴더에 `report.html`·`results.json`·크롭·`golden.json`(사람이 확정한 정답 LaTeX)을 두고, 같은 폴더의 `golden.json`과 정확 일치율·유사도를 냄(없으면 첫 실행이 틀을 만들고, `--rescore`는 OCR 없이 재채점) |
 | `pdf2word/inlinemath.py` | 텍스트 레이어의 인라인 수식(ρ_f, u_i, Ψ_⊥, \vec{v}) → `$...$`. 임계값은 파일 상단 상수(`SMALL_RATIO`, `SHIFT_RATIO`, `GLUE_GAP`, `ACCENT_RAISE`) |
 | `pdf2word/vectormath.py` | 벡터 도형으로 그려진 수식·기호(매뉴얼) |
 | `pdf2word/outline.py` | 책갈피 트리, 챕터 쪽 범위, 부분 문서 만들기, 인쇄 쪽 번호 |

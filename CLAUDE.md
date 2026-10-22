@@ -1,7 +1,7 @@
 # pdf2word
 
 PDF(논문·책·매뉴얼) → Word(.docx) 또는 Obsidian Markdown. 레이아웃 분석(pymupdf4llm + pymupdf-layout, CPU ONNX),
-수식 OCR(RapidLaTeXOCR, 선택적으로 Claude 비전), 그림 추출, 서지정보, 책갈피 기반 챕터 분할.
+수식 OCR(Pix2Text MFR ONNX `p2t`, 폴백 RapidLaTeXOCR, 선택적으로 Claude 비전), 그림 추출, 서지정보, 책갈피 기반 챕터 분할.
 사용자 문서는 README.md, 변경 내역은 CHANGELOG.md, 개발 절차와 코드 지도는 docs/DEVELOPMENT.md.
 
 ## 환경과 명령
@@ -11,7 +11,7 @@ PDF(논문·책·매뉴얼) → Word(.docx) 또는 Obsidian Markdown. 레이아�
   `main_gui.bat`는 가상환경을 3.12로만 만들고 받아들인다(uv가 없으면 설치해서 3.12를 내려받음).
 - 환경: `uv sync --locked --extra dev` (`.venv`, 3.12). 의존성을 바꾸면 `pyproject.toml`과 `requirements.txt`를
   같이 고치고 `uv lock`.
-- 테스트: `.venv\Scripts\python -m pytest tests -q` (37개, 모델·네트워크 불필요, 약 7초).
+- 테스트: `.venv\Scripts\python -m pytest tests -q` (57개, 모델·네트워크 불필요, 약 7초).
 - 실행: `.venv\Scripts\python main_gui.py` (GUI) / `... main_gui.py paper.pdf --pages 1-5 -f md -o out -v` (CLI).
   변환은 수 분 걸리므로 백그라운드로 돌리고 `-v` 로그 파일을 본다. 결과는 `out/`(gitignore)에.
 - GPU 없음. **torch 계열 의존성 금지**(CPU 전용). Word 수식 개체 변환은 Windows + Office에서만.
@@ -19,7 +19,7 @@ PDF(논문·책·매뉴얼) → Word(.docx) 또는 Obsidian Markdown. 레이아�
 ## 구조
 
 `pdf2word/converter.py`(파이프라인, `_DocContext.render_page`가 `page_boxes`를 클래스별 처리) · `mathocr.py`(수식
-OCR·검증·캐시) · `inlinemath.py`(텍스트 레이어 인라인 수식 → `$...$`) · `vectormath.py`(벡터 도형 수식) ·
+OCR·검증·캐시) · `mfr_onnx.py`(Pix2Text MFR 모델 파일·onnxruntime 러너) · `inlinemath.py`(텍스트 레이어 인라인 수식 → `$...$`) · `vectormath.py`(벡터 도형 수식) ·
 `outline.py`(책갈피·챕터·인쇄 쪽 번호) · `docx_out.py`(Word) · `obsidian.py`(Markdown 후처리) · `metadata.py` ·
 `lighten.py` · `symbols.py` · `config.py`/`cli.py`(옵션은 두 곳에 같이) · `main_gui.py`(tkinter GUI, 인수 있으면 CLI).
 

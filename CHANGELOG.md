@@ -5,6 +5,30 @@ GUI와 결과물에는 `v1.0`처럼 앞 두 자리만 표시합니다.
 
 ## 미공개
 
+- 수식 OCR 엔진 `p2t` 추가, 기본값 변경: Pix2Text MFR 1.5(TrOCR 구조, 모델 3개 합계 120 MB)를 torch 없이 onnxruntime·tokenizers만으로
+  돌리는 러너(`pdf2word/mfr_onnx.py`)와 `mathocr.Pix2TextEngine`. `--math-engine`의 기본값이 `rapid`에서 `p2t`로 바뀌고(GUI는 첫 항목
+  `p2t  (로컬, 무료, 추천)`), 여러 줄 수식을 줄 분할 없이 통째로 읽음. 첫 실행 때 `%LOCALAPPDATA%\pdf2word\models\pix2text-mfr-1.5`
+  (그 외 `~/.cache/pdf2word/models`, `PDF2WORD_MODELS`로 변경)에 내려받아 크기·sha256을 검사하고, 내려받지 못하면(오프라인·방화벽)
+  로그에 사유를 적고 `rapid`로 변환을 계속함. 설치되는 패키지는 그대로(러너가 직접 쓰는 `onnxruntime>=1.17`·`tokenizers>=0.20`를
+  `pyproject.toml`·`requirements.txt`에 명시). `--math-zooms` 기본값은 고정 `2,3,4`에서 엔진별 기본(p2t 4,3,2 /
+  rapid 2,3,4)으로 바뀜(옵션을 주면 그 값이 우선). 이유: paper-01 골든 4식에서 평균 유사도가 rapid 0.745(autojunk를 끄면 0.912)에서
+  p2t 0.975로 오르고 두 줄 식·굵은 `\chi`를 정확히 읽음(`docs/decisions/math-engine-pix2text.md`; 두 번째 논문에서 판정 기준을
+  못 넘으면 기본값을 rapid로 되돌림)
+- p2t 보강(결정 워크플로의 검증 렌즈 반영): 모델 URL을 커밋 리비전에 고정(sha256과 짝이 맞는 파일만 받음), 시간 예산을 식 하나에
+  배율을 합쳐 90 s·이미지 한 장 60 s로 둠(넘으면 그 식은 이미지로 남김), 배율 간 동률은 큰 배율 우선, 엔진 호출 실패(예외·시간
+  초과)는 캐시에 남기지 않음(이전엔 영구 실패로 기억됨), onnxruntime 스레드 4개·스핀 대기 끔(같은 속도에 CPU 시간 1/3)
+- 배율 간 일치도로 고른 식의 `⚠` 문턱을 0.9로 올림(`mathocr.AGREE_LOW`; 텍스트 레이어 대조는 0.6 그대로). 이유: 틀린 읽기도
+  배율끼리는 0.85~0.9로 일치해 0.6으로는 경고가 붙지 않았음
+- `\\{`(줄 바꿈 뒤 그룹)를 이스케이프된 중괄호로 잘못 읽어 여러 줄 식을 버릴 수 있던 `braces_balanced`·`normalize_latex` 버그 수정
+- 의존성: `pymupdf`·`pymupdf4llm`·`pymupdf-layout`을 `<2`로 제한(2026-10-19에 나온 2.0은 검증 전이고 `main_gui.bat`는
+  pyproject 범위로 설치하므로 새 PC가 2.0을 받게 됨). `uv lock` 갱신(잠긴 버전은 그대로)
+- 식 번호가 식보다 아래 줄에 있을 때 식의 끝(`)²]` 등)이 잘리던 버그를 고침: `_split_regions`가 번호 사각형의 x0에서 영역을
+  자르는 대신, 번호가 식의 글자 행과 겹치지 않으면 폭을 유지하고 렌더링 이미지에서 번호 사각형을 흰색으로 지움
+- 긴 식(200자 초과)에서 `difflib`의 autojunk 때문에 배율 간 일치도(`agreement`)와 벤치마크 골든 유사도가 실제보다 깎이던 버그를
+  고침(`autojunk=False`). 잘못된 `⚠ OCR 신뢰도 낮음`의 원인이 될 수 있었음
+- `looks_garbage`의 악센트 상한이 줄 수에 비례하도록 바뀜(여러 줄 식을 통째로 읽는 엔진에서 정상 식이 걸러지지 않게)
+- `normalize_latex`가 `\cfrac`·`\dfrac`·`\tfrac`, `\operatorname*`, 글꼴 전환(`\sf`·`\tt`·`\it` 등)을 같게 취급해 골든 채점이
+  표기 차이에 흔들리지 않음. `tools/bench_mathocr.py`의 `--engines` 기본값은 `p2t`
 - 수식 OCR 검증 계층: 텍스트 레이어가 깨진 PDF(Type 1 사설 인코딩 — 구형 Elsevier 등, 본문을 복사하면 `¼`·`ð`·`þ`가 나오는 것)를
   감지해(`mathocr.hint_usable`: 한 수식 영역에 `ð`/`þ`/`Þ`가 2개 이상) 그 영역은 텍스트 레이어가 없는 것처럼 다룸. 힌트 기반 보정과
   신뢰도 대조를 건너뛰어 정답에 붙던 `⚠ OCR 신뢰도 낮음` 오경보를 없애고, 벡터 도형용 `doubtful_equation` 검사도 적용하지 않음.
@@ -19,7 +43,7 @@ GUI와 결과물에는 `v1.0`처럼 앞 두 자리만 표시합니다.
 - `tools/bench_mathocr.py`: 한 PDF의 디스플레이 수식을 변환기와 같은 방법으로 찾아 엔진별 LaTeX·신뢰도·시간을 `report.md`/
   `report.html`(MathJax)/`results.json`으로 비교(PDF마다 `bench/<stem>/` 한 폴더에 `golden.json`과 함께). `--golden`으로 사람이 확정한 정답 LaTeX(`bench/<stem>/golden.json`)와
   정확 일치율·유사도를 냄(`normalize_latex`: 굵기·괄호 크기·간격은 무시, 악센트·첨자·기호는 유지). 첫 실행 때 같은 폴더에 `golden.json` 틀을 자동 생성, `--rescore`로 OCR 없이 재채점
-- 테스트 `tests/test_garbled_hint.py`, `tests/test_labels.py`(합성 2단 페이지), `tests/test_agreement.py`, `tests/test_bench.py` 추가(총 37개)
+- 테스트 `tests/test_garbled_hint.py`, `tests/test_labels.py`(합성 2단 페이지), `tests/test_agreement.py`, `tests/test_bench.py` 추가(총 37개; p2t 관련 테스트까지 현재 63개)
 - `.claude/`(스킬·에이전트·settings.json)와 CLAUDE.md "작업 라우팅": 단계별 모델 배정(방향 결정·진단 Fable, 구현 Opus,
   배선·검증·문안 Sonnet). 인계물 틀 `docs/decisions/_template.md`, `docs/issues/_template.md`
 
