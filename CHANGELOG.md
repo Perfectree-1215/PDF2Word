@@ -3,6 +3,21 @@
 버전은 `pdf2word/__init__.py`의 `__version__` 한 곳에서 관리합니다. 형식은 `MAJOR.MINOR.PATCH`이며
 GUI와 결과물에는 `v1.0`처럼 앞 두 자리만 표시합니다.
 
+## 미공개
+
+- 노트가 임베드한 이미지를 라벨 붙은 모음 시트 몇 장으로 묶는 `--figure-sheet add|replace`(기본 none)와 타일 해상도 `--sheet-dpi 120`을 추가함
+  (GUI는 저장 위치와 형식 카드의 "그림 파일" 콤보): `pdf2word/sheets.py`가 한 장이 Claude 원본 해상도 한도(긴 변 2,000 px(API 한도는 2,576이나 Claude Code Read 도구가 약 2,000으로 줄임)·28 px 패치
+  4,784개) 안에 들도록 타일을 높이순으로 정렬해 선반 패킹함(여백이 줄고, 라벨이 있어 문서 순서는 필요 없음). 측정: paper-01 이미지 19장이 시트 2장이 되고
+  토큰은 12,637 → 6,180(−51%, 문서 순서·150 dpi에서는 시트 3장 11,556). `replace`는 개별 PNG를 지우고 본문 임베드를 `*[Fig. 3 → sheet-1.png]*`로 바꾸며 끝에
+  `## 그림 모음 (figure sheets)` 절을 붙이고, 프론트매터에 `figure_sheets: N`을 적음. Word 출력은 그대로. 재변환 때는 이전 `sheet-N.png`도
+  생성물로 보고 지움. 이유: LLM 위키 인제스트에서 이미지 파일마다 읽기가 한 번이라 파일 수를 줄여야 함(`docs/decisions/figures-for-llm-ingest.md` B3)
+- 같은 캡션의 그림 패널을 한 장으로 합치는 `--figure-panels merge`(기본)를 추가하고 `split`으로 예전처럼 패널마다 파일을 남길 수 있게 함
+  (GUI는 저장 위치와 형식 카드의 체크박스). **기본 동작 변경**: 패널이 나뉜 PDF의 그림 파일이 `fig2a.png`·`fig2b.png`에서 `fig2.png` 한 장이 됨: `_DocContext._panel_groups`가 같은 캡션에 붙는 picture 박스를 묶어 합집합 영역을 한 번에
+  렌더링하고(`fig2.png`), 캡션이 없는 12 pt 이내 인접 조각도 편입함. 안전 조건: 패널 사이에 본문이 10%·120자를 넘게 있거나, 합집합이
+  다른 박스와 20% 이상 겹치거나, 합집합 면적이 패널 면적 합의 3배를 넘으면 병합하지 않고 패널별 파일(`fig2a.png`·`fig2b.png`)로
+  남김(`_merge_blocker`). 이유: LLM 위키 인제스트에서 그림 한 장이 비전 호출 한 번이라 패널 수만큼 같은 그림의 토큰이 중복됨
+  (`docs/decisions/figures-for-llm-ingest.md`, `docs/issues/figure-panel-merge.md`)
+
 ## v1.5.0 — 2026-10-23
 
 수식 OCR 엔진을 Pix2Text MFR(`p2t`, CPU ONNX)로 바꾸고 기본값으로 삼았습니다. 깨진 텍스트 레이어의 식은 배율 간 일치도로 검증하고,

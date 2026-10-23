@@ -52,6 +52,10 @@ class Options:
     keep_picture_text: bool = False             # keep text extracted inside figures
     ocr_pages: bool = False                     # Tesseract OCR for scanned pages (needs tesseract)
     lighten: bool = True                        # merge clusters of tiny images before layout analysis
+    figure_panels: str = "merge"                # "merge" = panels of one captioned figure in one image | "split" = one image per panel
+    figure_sheet: str = "none"                  # "none" | "add" | "replace": tile every embedded image onto a few labelled sheet-N.png
+                                                # (Markdown only; "replace" drops the single image files) - for LLM ingest
+    sheet_dpi: int = 120                        # tile resolution on the sheets (150 for sharper subscripts, more sheets)
 
     # --- equations ---------------------------------------------------------
     math_engine: str = "p2t"                    # "p2t" | "rapid" | "claude" | "none"

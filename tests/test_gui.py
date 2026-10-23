@@ -143,6 +143,14 @@ def test_quoted_extra_values_reach_the_options():
     assert (args.title, args.author) == ("My Report", "O'Brien")
 
 
+def test_figure_panels_split_from_the_gui_and_from_extra_options():
+    # the App class lives inside launch_gui (needs a window), so check the argv it emits with the unchecked box
+    # (["--figure-panels", "split"]) and the same option typed into the "extra options" box
+    for tokens in (["--figure-panels", "split"], main_gui.split_extra("--figure-panels split")):
+        assert build_parser().parse_args(["x.pdf"] + tokens).figure_panels == "split"
+    assert build_parser().parse_args(["x.pdf"]).figure_panels == "merge"      # box checked: nothing is added
+
+
 def test_unbalanced_quote_raises_value_error():
     with pytest.raises(ValueError):
         main_gui.split_extra('--title "unbalanced')
@@ -176,3 +184,14 @@ def test_status_text_names_the_engines_model():
     assert f"약 {p2t_mb:.0f} MB" in main_gui.status_text("p2t")
     assert "약 170 MB" in main_gui.status_text("rapid")
     assert main_gui.status_text("claude") == main_gui.status_text("none") == "변환 중 …"
+
+
+def test_figure_sheet_combo_values_reach_the_parser():
+    # the combo lives inside launch_gui; _argv adds ["--figure-sheet", value] only when the value is not "none"
+    assert dict(main_gui.SHEETS)["개별 파일 (기본)"] == "none"
+    for _text, value in main_gui.SHEETS:
+        tokens = [] if value == "none" else ["--figure-sheet", value]
+        assert build_parser().parse_args(["x.pdf"] + tokens).figure_sheet == value
+    assert [v for _t, v in main_gui.SHEETS] == ["none", "add", "replace"]
+    assert main_gui.split_extra("--sheet-dpi 200") == ["--sheet-dpi", "200"]
+    assert build_parser().parse_args(["x.pdf"] + main_gui.split_extra("--sheet-dpi 200")).sheet_dpi == 200

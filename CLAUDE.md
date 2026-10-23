@@ -11,7 +11,7 @@ PDF(논문·책·매뉴얼) → Word(.docx) 또는 Obsidian Markdown. 레이아�
   `main_gui.bat`는 가상환경을 3.12로만 만들고 받아들인다(uv가 없으면 설치해서 3.12를 내려받음).
 - 환경: `uv sync --locked --extra dev` (`.venv`, 3.12). 의존성을 바꾸면 `pyproject.toml`과 `requirements.txt`를
   같이 고치고 `uv lock`.
-- 테스트: `.venv\Scripts\python -m pytest tests -q` (222개, 모델·네트워크 불필요, 약 7초).
+- 테스트: `.venv\Scripts\python -m pytest tests -q` (250개, 모델·네트워크 불필요, 약 10초).
 - 실행: `.venv\Scripts\python main_gui.py` (GUI) / `... main_gui.py paper.pdf --pages 1-5 -f md -o out -v` (CLI).
   변환은 수 분 걸리므로 백그라운드로 돌리고 `-v` 로그 파일을 본다. 결과는 `out/`(gitignore)에.
 - GPU 없음. **torch 계열 의존성 금지**(CPU 전용). Word 수식 개체 변환은 Windows + Office에서만.
@@ -20,7 +20,7 @@ PDF(논문·책·매뉴얼) → Word(.docx) 또는 Obsidian Markdown. 레이아�
 
 `pdf2word/converter.py`(파이프라인, `_DocContext.render_page`가 `page_boxes`를 클래스별 처리) · `mathocr.py`(수식
 OCR·검증·캐시) · `mfr_onnx.py`(Pix2Text MFR 모델 파일·onnxruntime 러너) · `inlinemath.py`(텍스트 레이어 인라인 수식 → `$...$`) · `vectormath.py`(벡터 도형 수식) ·
-`outline.py`(책갈피·챕터·인쇄 쪽 번호) · `docx_out.py`(Word) · `obsidian.py`(Markdown 후처리) · `metadata.py` ·
+`outline.py`(책갈피·챕터·인쇄 쪽 번호) · `docx_out.py`(Word) · `obsidian.py`(Markdown 후처리) · `sheets.py`(그림 모음 시트, `--figure-sheet`) · `metadata.py` ·
 `lighten.py` · `symbols.py` · `config.py`/`cli.py`(옵션은 두 곳에 같이) · `main_gui.py`(tkinter GUI, 인수 있으면 CLI).
 
 ## 규칙
@@ -60,10 +60,10 @@ OCR·검증·캐시) · `mfr_onnx.py`(Pix2Text MFR 모델 파일·onnxruntime �
 ### 등급 근거
 | 단계 | 모델 | 이유 |
 |---|---|---|
-| 팀장(메인 세션) | Fable 5.1 max (`.claude/settings.json`의 `CLAUDE_CODE_EFFORT_LEVEL`) | 배차·대화·판단. 프로젝트 설정이 모델을 고정하므로 `/model`로 바꿔도 다음 세션에 되돌아온다. 플랜에 따라 구독 한도가 아닌 별도 크레딧으로 청구될 수 있다 |
-| ① ② | Fable 5.1 max | 대조할 원본이 없고 틀리면 한참 뒤에 드러나며 되돌리기 어렵다(인터뷰 Q2) |
+| 팀장(메인 세션) | Fable 5.1 xhigh (`.claude/settings.json`의 `CLAUDE_CODE_EFFORT_LEVEL`) | 배차·대화·판단. 프로젝트 설정이 모델을 고정하므로 `/model`로 바꿔도 다음 세션에 되돌아온다. 플랜에 따라 구독 한도가 아닌 별도 크레딧으로 청구될 수 있다 |
+| ① ② | Fable 5.1 xhigh | 대조할 원본이 없고 틀리면 한참 뒤에 드러나며 되돌리기 어렵다(인터뷰 Q2) |
 | ③ | Opus 5.5 xhigh | 판단은 ②에서 끝났고 코드로 옮기는 일. 테스트로 즉시 검출된다 |
 | ④ ⑤ ⑥ | Sonnet 5.5 high | 기계적이고 원본·테스트와 대조 가능. 사용자가 GUI·샘플로 바로 확인한다(Q3) |
-| 이름 없는 서브에이전트(Explore 등) | Opus 5.5 (general-purpose는 `CLAUDE_CODE_SUBAGENT_MODEL`, Explore는 메인이 Fable일 때 내장 규칙으로 Opus, Plan은 메인 모델 상속) | 조사·탐색 기본값 |
+| 이름 없는 서브에이전트(general-purpose·claude) | Haiku 5.5 medium (`CLAUDE_CODE_SUBAGENT_MODEL`). 파일 세기·명령 실행·로그 요약 같은 기계적 작업용. 이미지 판독·회귀 대조·판단이 필요하면 호출 때 `model: sonnet`, 어려운 조사는 `model: opus`로 그 건만 올린다. Explore는 메인이 Fable일 때 내장 규칙으로 Opus, Plan은 메인 모델 상속 | 이 에이전트들은 설계상 로그·결과물을 통째로 읽어 토큰 비중이 크다(2026-10-23 `/usage` 74%, 10-24 62%). 비중은 줄지 않으므로 단가를 낮춘다 |
 
-`max`는 설정 파일의 `effortLevel` 키가 받지 않는 값이라 환경변수 `CLAUDE_CODE_EFFORT_LEVEL=max`로 건다. 이 환경변수는 스킬·에이전트 frontmatter의 `effort`보다 우선하므로, Opus xhigh·Sonnet high는 `modelSettings`의 모델별 `maxEffortLevel` 상한으로 지킨다(Claude Code 2.1.267 이상).
+effort는 환경변수 `CLAUDE_CODE_EFFORT_LEVEL=xhigh`로 건다(2026-10-24 사용자 결정으로 `max`에서 내림). 이 환경변수는 스킬·에이전트 frontmatter의 `effort`보다 우선하므로, Opus xhigh·Sonnet high·Haiku medium은 `modelSettings`의 모델별 `maxEffortLevel` 상한으로 지킨다(Claude Code 2.1.267 이상).

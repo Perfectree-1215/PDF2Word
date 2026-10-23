@@ -105,6 +105,13 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--pages", help="page range in PDF order, 1-based, e.g. 1-5,8; printed page numbers "
                                    "with a p: p201-205, pxii")
     g.add_argument("--dpi", type=int, default=200, help="figure resolution")
+    g.add_argument("--figure-panels", choices=["merge", "split"], default="merge",
+                   help="panels of one captioned figure as one image (merge, default) or one image per panel (split)")
+    g.add_argument("--figure-sheet", choices=["none", "add", "replace"], default="none",
+                   help="tile every embedded image onto a few labelled sheet-N.png for LLM ingest (Markdown only): "
+                        "add = keep the single files too, replace = sheets only")
+    g.add_argument("--sheet-dpi", type=int, default=120,
+                   help="tile resolution on the figure sheets (150 for sharper subscripts, more sheets)")
     g.add_argument("--image-links", choices=["wiki", "markdown"], default="wiki",
                    help="![[file]] (Obsidian) or ![](file) (standard)")
     g.add_argument("--citations", choices=["keep", "footnotes"], default="keep",
@@ -150,7 +157,8 @@ def options_from_args(args) -> Options:
         chapter_template=args.chapter_template, split_pages=max(0, args.split_pages or 0),
         chapter_depth=args.chapter_depth, subchapters=args.subchapters,
         online=not args.offline, author=args.author, year=args.year, title=args.title,
-        pages=args.pages, dpi=args.dpi, keep_headers=args.keep_headers,
+        pages=args.pages, dpi=args.dpi, figure_panels=args.figure_panels, figure_sheet=args.figure_sheet,
+        sheet_dpi=args.sheet_dpi, keep_headers=args.keep_headers,
         keep_picture_text=args.keep_picture_text, ocr_pages=args.ocr_pages, lighten=not args.no_lighten,
         math_engine=args.math_engine, math_zooms=args.math_zooms,
         math_max_tokens=args.math_max_tokens, math_mode=args.math_mode,

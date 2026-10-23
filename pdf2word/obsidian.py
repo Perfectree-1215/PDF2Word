@@ -86,6 +86,8 @@ def build_frontmatter(meta, pdf_path: Path, asset_dir_name: str, version: str, e
             lines.append(f"equations_as_image: {stats.get('eq_fallback', 0)}")
             if stats.get('eq_unverified'):
                 lines.append(f"equations_unverified: {stats['eq_unverified']}")
+        if stats.get("figure_sheets"):
+            lines.append(f"figure_sheets: {stats['figure_sheets']}")
     lines.append("---")
     return "\n".join(lines) + "\n\n"
 
