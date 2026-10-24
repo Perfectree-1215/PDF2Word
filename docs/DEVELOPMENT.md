@@ -80,10 +80,13 @@ uv sync --locked --extra dev
 | `tests/test_bench.py` | `tools/bench_mathocr.py`의 LaTeX 정규화·골든 채점·요약 |
 | `tests/test_mfr_onnx.py` | Pix2Text MFR 러너(가짜 세션·토크나이저·다운로더): 탐욕 루프·상한·반복 중단·후처리·모델 폴더·해시 검증 |
 | `tests/test_p2t_engine.py` | p2t 엔진의 배치: 모델 로드 실패 → rapid 폴백, 엔진별 기본 배율, 전체 영역 읽기(스텁 엔진) |
+| `tests/test_pictures.py` | 그림 패널 병합·분리 조건(같은 캡션 병합, 사이 본문·겹침·면적 3배 초과 시 분리, 인접 조각 편입, `--figure-panels split`) |
+| `tests/test_sheets.py` | 그림 모음 시트: 선반 패킹·토큰 예산, 라벨, `replace`의 본문 치환·개별 PNG 삭제, `add`, 프론트매터 `figure_sheets`, Word 출력 불변 |
 | `tests/test_assets.py` | 자산 폴더 소유(`_own_asset_dir`): docx 변환이 같은 이름 폴더의 .md 그림을 건드리지 않음, 같은 저자·연도 논문은 `-2` 폴더, `[ ] #`가 든 PDF 이름 |
+| `tests/test_eqcheck.py` | 수식 검토 페이지: 변환기가 쓰는 `$$` 블록과 같은 텍스트(`equation_block`), 페이지의 데이터 삽입·이스케이프, 변환기가 디스플레이 수식을 빠짐없이 기록 |
 | `tests/test_chapters.py` | 챕터 분할 경계: 책갈피 없는 PDF, 글줄을 지나는 자르기, 같은 쪽 위쪽 항목, 회전 쪽, 쪽 아래 목적지, 합자 제목, 한글 파일명(NFC), 빈 선택 오류, 대문자 쪽 라벨, 목적지 없는 책갈피 |
-| `tests/test_cli.py` | 파서가 미리 거절하는 값(`--math-zooms` 형식, 빈 `--chapters`; 종료 코드 2) |
-| `tests/test_gui.py` | 창 없는 GUI 로직: `split_extra`, `load_settings`(v1.3 설정의 rapid → p2t 한 번), `plan_for`/`parts_for`, `run_jobs`(파트별 변환·오류 중단·`--list-chapters` 거절), 상태 문구 |
+| `tests/test_cli.py` | 파서가 미리 거절하는 값(`--math-zooms` 형식, 빈 `--chapters`; 종료 코드 2), `--figure-panels`·`--figure-sheet`(기본 `replace`)·`--sheet-dpi`·`--math-mode`(기본 `latex`)·`--no-equation-check` 기본값·전달 |
+| `tests/test_gui.py` | 창 없는 GUI 로직: `split_extra`, 패널 병합 체크·그림 파일 콤보·수식 검토 체크박스의 argv, `load_settings`(v1.3 설정의 rapid → p2t 한 번), `plan_for`/`parts_for`, `run_jobs`(파트별 변환·오류 중단·`--list-chapters` 거절), 상태 문구 |
 | `tests/test_inlinemath.py` | 인라인 수식 run을 Markdown에 놓을 때 주변 글 보존(산문 단어, 강조 묶음, `∗` 위첨자) |
 | `tests/test_lighten.py` | 경량화 사본의 그림 묶기, `cluster_rects` sweep = 쌍별 비교, redaction 상수 |
 | `tests/test_metadata.py` | 1쪽 휴리스틱(합성 PDF)과 CrossRef/arXiv(가짜 HTTP): 공백 span, 키워드, 마스트헤드, 연도, DOI, 복합 성, `&` 저자 |
@@ -102,7 +105,9 @@ Theory Guide로 확인했습니다. 새 PC에서는 같은 종류의 PDF를 아�
 |---|---|
 | `main_gui.py` / `main_gui.bat` | tkinter GUI와 실행 스크립트. 인수가 있으면 CLI로 넘김. 창 없이 테스트되는 함수: `run_jobs`(작업 스레드 본체, 오류·SystemExit를 큐로), `parts_for`·`plan_for`(챕터·쪽 분할 계획, cli `plan_parts`와 같음), `split_extra`(추가 옵션 칸, 큰따옴표만), `load_settings`(gui.json `"v": 2`). bat는 **ASCII만, CRLF**(`.gitattributes`가 보장) |
 | `pdf2word/cli.py`, `config.py` | 옵션 정의(`Options` dataclass)와 명령줄. 새 옵션은 두 곳에 같이 넣고 README 옵션 표를 갱신 |
-| `pdf2word/converter.py` | 파이프라인. `pymupdf4llm.to_markdown(page_chunks=True)` 결과의 `page_boxes`를 `_DocContext.render_page`가 클래스별로 처리(formula/picture/caption/text…). 자산 폴더는 `_own_asset_dir`(md: 없음·빈 폴더·이번 .md가 참조하는 첫 이름, 아니면 `-2`·`-3`…; docx는 임시 폴더에서 만들고 지움) |
+| `pdf2word/converter.py` | 파이프라인. 같은 캡션의 picture 박스 병합(`_panel_groups`·`_merge_blocker`, `--figure-panels`). `pymupdf4llm.to_markdown(page_chunks=True)` 결과의 `page_boxes`를 `_DocContext.render_page`가 클래스별로 처리(formula/picture/caption/text…). 자산 폴더는 `_own_asset_dir`(md: 없음·빈 폴더·이번 .md가 참조하는 첫 이름, 아니면 `-2`·`-3`…; docx는 임시 폴더에서 만들고 지움) |
+| `pdf2word/sheets.py` | 그림 모음 시트: 임베드 이미지를 토큰 예산(패치 4,784개) 안에서 높이순 선반 패킹(긴 변 2,000 px), `--figure-sheet` |
+| `pdf2word/eqcheck.py` | 수식 검토 페이지: `converter._run`이 `opt.equation_check`(기본 켬, `--no-equation-check`)일 때 `<출력 파일>.equations.html`을 만듦. 모든 디스플레이 수식의 쪽·번호·PDF 크롭(base64)·LaTeX·KaTeX 렌더링을 나란히 보이고, Edge·Chrome은 MD 파일을 연결해 해당 `$$` 블록에 제자리 저장, 다른 브라우저는 수정본 다운로드, Word는 보기만 |
 | `pdf2word/mathocr.py` | 수식 박스 렌더링 → 줄 분할 → `p2t`(Pix2Text MFR, 기본; 모델을 못 쓰면 rapid로 대체)/RapidLaTeXOCR/Claude → 검증(괄호·반복·텍스트 대조), 캐시. 깨진 텍스트 레이어 감지(`hint_usable`, `label_text`), 식 번호 찾기(`find_labels`, 2단 조판은 `box=` 필수), 레이어가 깨진 식의 배율 간 일치도 선택(`_recognize_by_agreement`, `normalize_latex`). 저장 crop은 `EquationOCR.DISPLAY_ZOOM`(2 = 144 dpi, 엔진이 읽는 배율과 별개), `recognize_region(read=False)`는 OCR 없이 crop만(`--math-mode image`). 캐시에는 보정(`fix_braces`·`looks_garbage`·`hint_fixes`) 뒤 결과가 들어가므로 그 규칙을 바꾸면 `OCRCache.VERSION`(현재 3)을 올림 |
 | `pdf2word/mfr_onnx.py` | Pix2Text MFR 1.5 모델 파일 관리(내려받기·크기/sha256 검사·`PDF2WORD_MODELS`)와 onnxruntime 탐욕 디코딩 러너(torch 없음), 출력 후처리 |
 | `tools/bench_mathocr.py` | 한 PDF의 디스플레이 수식을 변환기와 같은 방법으로 찾아 `--engines`(기본 `p2t`) 엔진별 결과를 `report.md`/`report.html`(MathJax)/`results.json`으로 비교. PDF마다 `bench/<stem>/` 한 폴더에 `report.html`·`results.json`·크롭·`golden.json`(사람이 확정한 정답 LaTeX)을 두고, 같은 폴더의 `golden.json`과 정확 일치율·유사도를 냄(없으면 첫 실행이 틀을 만들고, `--rescore`는 OCR 없이 재채점). 골든 키는 (쪽, 라벨, `k`)이고 `k`는 같은 쪽·같은 라벨 안의 순번(번호 없는 식이 한 쪽에 여럿일 때), 옛 golden.json처럼 없으면 0 |
@@ -131,7 +136,13 @@ Theory Guide로 확인했습니다. 새 PC에서는 같은 종류의 PDF를 아�
 1. `pdf2word/__init__.py`의 `__version__`만 올립니다(`pyproject.toml`이 읽어 가고 GUI 제목에도 표시).
 2. `CHANGELOG.md`의 `## 미공개`를 `## vX.Y.Z — 날짜`로 바꾸고 새 `## 미공개`는 다음 변경 때 만듭니다.
 3. `python -m pytest tests -q`, 그리고 세 종류 PDF 변환을 한 번씩.
-4. 커밋 메시지는 지금까지처럼 `vX.Y.Z: 한 줄 요약` 형식이고 태그는 따로 쓰지 않습니다.
+4. 커밋 메시지는 지금까지처럼 `vX.Y.Z: 한 줄 요약` 형식. 브랜치에서 PR로 main에 합치고, 머지된 브랜치는 저장소 설정
+   (Settings → General → *Automatically delete head branches*)이 지웁니다. 로컬에서 태그를 따로 만들지 않습니다.
+5. 릴리스는 GitHub **Releases**에서 main의 머지 커밋에 태그 `vX.Y.Z`를 붙여 만들고 본문에 CHANGELOG의 해당 절을 붙입니다.
+   첨부 파일 없이 GitHub가 만드는 "Source code (zip)"이 배포본인데, 이 zip은 `git archive`라서 `.gitattributes`의 `export-ignore`
+   경로(tests·docs·tools·bench·`.claude`·`.obsidian`·CLAUDE.md·dotfile)가 빠지고 실행에 필요한 파일(런처·`pdf2word/`·pyproject·
+   requirements·uv.lock·.python-version·README·CHANGELOG)만 들어갑니다. 실행에 필요 없는 파일이나 폴더를 새로 추가하면
+   `export-ignore` 목록에도 올립니다. 확인: `git archive --format=zip -o out/src.zip HEAD` 뒤 `python -m zipfile -l out/src.zip`.
 
 ## 7. 환경별로 겪은 문제
 

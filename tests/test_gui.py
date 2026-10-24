@@ -143,6 +143,14 @@ def test_quoted_extra_values_reach_the_options():
     assert (args.title, args.author) == ("My Report", "O'Brien")
 
 
+def test_figure_panels_split_from_the_gui_and_from_extra_options():
+    # the App class lives inside launch_gui (needs a window), so check the argv it emits with the unchecked box
+    # (["--figure-panels", "split"]) and the same option typed into the "extra options" box
+    for tokens in (["--figure-panels", "split"], main_gui.split_extra("--figure-panels split")):
+        assert build_parser().parse_args(["x.pdf"] + tokens).figure_panels == "split"
+    assert build_parser().parse_args(["x.pdf"]).figure_panels == "merge"      # box checked: nothing is added
+
+
 def test_unbalanced_quote_raises_value_error():
     with pytest.raises(ValueError):
         main_gui.split_extra('--title "unbalanced')
@@ -176,3 +184,24 @@ def test_status_text_names_the_engines_model():
     assert f"약 {p2t_mb:.0f} MB" in main_gui.status_text("p2t")
     assert "약 170 MB" in main_gui.status_text("rapid")
     assert main_gui.status_text("claude") == main_gui.status_text("none") == "변환 중 …"
+
+
+def test_figure_sheet_combo_values_reach_the_parser():
+    # the combo lives inside launch_gui; _argv always adds ["--figure-sheet", value] (safe whatever the default is)
+    assert dict(main_gui.SHEETS)["모음 시트만 (LLM 인제스트용, 기본)"] == "replace"
+    assert dict(main_gui.SHEETS)["개별 파일"] == "none"
+    for _text, value in main_gui.SHEETS:
+        assert build_parser().parse_args(["x.pdf", "--figure-sheet", value]).figure_sheet == value
+    assert [v for _t, v in main_gui.SHEETS] == ["none", "add", "replace"]
+    assert build_parser().parse_args(["x.pdf"]).figure_sheet == "replace"      # what the combo starts on
+    assert main_gui.split_extra("--sheet-dpi 200") == ["--sheet-dpi", "200"]
+    assert build_parser().parse_args(["x.pdf"] + main_gui.split_extra("--sheet-dpi 200")).sheet_dpi == 200
+
+
+def test_math_mode_combo_starts_on_ocr_only_and_equation_check_box_reaches_the_parser():
+    # the widgets live inside launch_gui: the combo starts on MATH_MODES[0] and the unchecked box adds --no-equation-check
+    assert main_gui.MATH_MODES[0][1] == "latex" == build_parser().parse_args(["x.pdf"]).math_mode
+    assert [v for _t, v in main_gui.MATH_MODES] == ["latex", "both", "image"]
+    for tokens in (["--no-equation-check"], main_gui.split_extra("--no-equation-check")):
+        assert build_parser().parse_args(["x.pdf"] + tokens).no_equation_check is True
+    assert build_parser().parse_args(["x.pdf"]).no_equation_check is False     # box checked: nothing is added

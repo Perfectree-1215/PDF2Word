@@ -2,7 +2,7 @@
 name: diagnose-blocker
 description: 땜질이 반복되는 막힌 문제의 원인을 찾아 수정안과 검증 샘플을 docs/issues/<slug>.md 에 남긴다. "막혔어", "왜 깨지지", "이 논문에선 안 맞아", "예외 처리", "땜질", "원인 찾아줘", "어떻게 해결할지", "hint_fixes", "레이아웃 분류", "신뢰도 낮음이 자꾸 붙어" 에 반응. 수식 OCR 보정 규칙·레이아웃 박스 분류처럼 한 샘플엔 맞고 다른 샘플엔 깨지는 문제에 사용.
 model: claude-fable-5-1
-effort: max
+effort: xhigh
 ---
 
 # 막힌 문제 진단

@@ -37,7 +37,8 @@ def app_version() -> str:
 
 FORMATS = [("📝 Word (.docx)", "docx"), ("🔗 Obsidian Markdown", "md"), ("둘 다", "both")]
 ENGINES = [("p2t  (로컬, 무료, 추천)", "p2t"), ("rapid  (로컬, 무료, 폴백)", "rapid"), ("claude  (API, 정확)", "claude"), ("none  (OCR 없이 이미지만)", "none")]
-MATH_MODES = [("이미지 + OCR 결과", "both"), ("OCR 결과만", "latex"), ("이미지만", "image")]
+MATH_MODES = [("OCR 결과만 (기본)", "latex"), ("이미지 + OCR 결과", "both"), ("이미지만", "image")]
+SHEETS = [("개별 파일", "none"), ("개별 파일 + 모음 시트", "add"), ("모음 시트만 (LLM 인제스트용, 기본)", "replace")]
 DOC_TYPES = [("자동 판별", "auto"), ("논문", "paper"), ("일반 문서 (책·매뉴얼·보고서)", "document")]
 SETTINGS_VERSION = 2       # gui.json "v"; files without it are v1.3, which saved "engine": "rapid" on every run
 MODEL_DOWNLOAD = {"p2t": "약 120 MB", "rapid": "약 170 MB"}     # first-run model download per engine
@@ -588,6 +589,8 @@ def launch_gui() -> int:
             row.grid(row=2, column=0, columnspan=6, sticky="w", pady=(6, 0))
             for text, value in FORMATS:
                 ttk.Radiobutton(row, text=text, value=value, variable=self.format_var).pack(side="left", padx=(0, 14))
+            self.panels_var = tk.BooleanVar(value=True)
+            ttk.Checkbutton(card, text="같은 캡션의 그림 패널을 한 장으로 합침 (--figure-panels)", variable=self.panels_var).grid(row=3, column=0, columnspan=6, sticky="w", pady=(4, 0))
 
             # equations
             card = self._card(self, "∑ 수식")
@@ -597,6 +600,8 @@ def launch_gui() -> int:
             ttk.Label(card, text="표시", style="Card.TLabel").grid(row=1, column=2, sticky="w")
             self.mode_var = tk.StringVar(value=MATH_MODES[0][0])
             ttk.Combobox(card, textvariable=self.mode_var, values=[m[0] for m in MATH_MODES], state="readonly", width=18).grid(row=1, column=3, padx=(6, 0), sticky="w")
+            self.eqcheck_var = tk.BooleanVar(value=True)
+            ttk.Checkbutton(card, text="변환 뒤 수식 검토 페이지(.equations.html) 만들기", variable=self.eqcheck_var).grid(row=2, column=0, columnspan=6, sticky="w", pady=(4, 0))
 
             # options
             card = self._card(self, "⚙ 기타 옵션")
@@ -604,16 +609,20 @@ def launch_gui() -> int:
             self.doctype_var = tk.StringVar(value=DOC_TYPES[0][0])
             ttk.Combobox(card, textvariable=self.doctype_var, values=[d[0] for d in DOC_TYPES], state="readonly", width=26).grid(row=1, column=1, columnspan=2, padx=(6, 0), sticky="w")
             ttk.Label(card, text="논문: 서지 조회·초록·참고문헌 처리 / 일반 문서: 파일명 그대로", style="Muted.TLabel").grid(row=1, column=3, columnspan=2, sticky="w", padx=(10, 0))
+            ttk.Label(card, text="그림 파일", style="Card.TLabel").grid(row=2, column=0, sticky="w", pady=(4, 0))
+            self.sheet_var = tk.StringVar(value=dict((v, t) for t, v in SHEETS)["replace"])
+            ttk.Combobox(card, textvariable=self.sheet_var, values=[s[0] for s in SHEETS], state="readonly", width=26).grid(row=2, column=1, columnspan=2, padx=(6, 0), pady=(4, 0), sticky="w")
+            ttk.Label(card, text="Obsidian 출력 전용: 그림을 라벨 붙은 모음 시트로 묶음", style="Muted.TLabel").grid(row=2, column=3, columnspan=2, sticky="w", padx=(10, 0), pady=(4, 0))
             self.offline_var = tk.BooleanVar(value=False)
-            ttk.Checkbutton(card, text="온라인 서지 조회 안 함 (--offline)", variable=self.offline_var).grid(row=2, column=0, columnspan=2, sticky="w", pady=(4, 0))
-            ttk.Label(card, text="페이지", style="Card.TLabel").grid(row=2, column=2, sticky="e", padx=(18, 4), pady=(4, 0))
+            ttk.Checkbutton(card, text="온라인 서지 조회 안 함 (--offline)", variable=self.offline_var).grid(row=3, column=0, columnspan=2, sticky="w", pady=(4, 0))
+            ttk.Label(card, text="페이지", style="Card.TLabel").grid(row=3, column=2, sticky="e", padx=(18, 4), pady=(4, 0))
             self.pages_var = tk.StringVar(value="")
-            ttk.Entry(card, textvariable=self.pages_var, width=10).grid(row=2, column=3, sticky="w", pady=(4, 0))
-            ttk.Label(card, text="예: 1-5,8 (PDF 순서) · p201-205 (인쇄 쪽 번호)", style="Muted.TLabel").grid(row=2, column=4, sticky="w", padx=(6, 0), pady=(4, 0))
-            ttk.Label(card, text="추가 옵션", style="Card.TLabel").grid(row=3, column=0, sticky="w", pady=(6, 0))
+            ttk.Entry(card, textvariable=self.pages_var, width=10).grid(row=3, column=3, sticky="w", pady=(4, 0))
+            ttk.Label(card, text="예: 1-5,8 (PDF 순서) · p201-205 (인쇄 쪽 번호)", style="Muted.TLabel").grid(row=3, column=4, sticky="w", padx=(6, 0), pady=(4, 0))
+            ttk.Label(card, text="추가 옵션", style="Card.TLabel").grid(row=4, column=0, sticky="w", pady=(6, 0))
             self.extra_var = tk.StringVar(value="")
-            ttk.Entry(card, textvariable=self.extra_var).grid(row=3, column=1, columnspan=4, sticky="ew", pady=(6, 0))
-            ttk.Label(card, text="명령줄 옵션 그대로 (예: --author Kim --year 2024 --citations footnotes -v)", style="Muted.TLabel").grid(row=4, column=1, columnspan=4, sticky="w")
+            ttk.Entry(card, textvariable=self.extra_var).grid(row=4, column=1, columnspan=4, sticky="ew", pady=(6, 0))
+            ttk.Label(card, text="명령줄 옵션 그대로 (예: --author Kim --year 2024 --citations footnotes -v)", style="Muted.TLabel").grid(row=5, column=1, columnspan=4, sticky="w")
             card.columnconfigure(4, weight=1)
 
             # actions
@@ -762,6 +771,11 @@ def launch_gui() -> int:
                 argv += ["--doc-type", doc_type]
             if not self.beside_var.get() and self.outdir_var.get().strip():
                 argv += ["-o", self.outdir_var.get().strip()]
+            if not self.panels_var.get():
+                argv += ["--figure-panels", "split"]
+            argv += ["--figure-sheet", dict(SHEETS)[self.sheet_var.get()]]
+            if not self.eqcheck_var.get():
+                argv.append("--no-equation-check")
             if self.offline_var.get():
                 argv.append("--offline")
             if self.pages_var.get().strip():
@@ -867,10 +881,13 @@ def launch_gui() -> int:
             data = load_settings()
             self.format_var.set(data.get("format", "docx"))
             self.engine_var.set(next((t for t, v in ENGINES if v == data.get("engine", "p2t")), ENGINES[0][0]))
-            self.mode_var.set(next((t for t, v in MATH_MODES if v == data.get("math_mode", "both")), MATH_MODES[0][0]))
+            self.mode_var.set(next((t for t, v in MATH_MODES if v == data.get("math_mode", "latex")), MATH_MODES[0][0]))
             self.doctype_var.set(next((t for t, v in DOC_TYPES if v == data.get("doc_type", "auto")), DOC_TYPES[0][0]))
             self.beside_var.set(data.get("beside", True))
             self.outdir_var.set(data.get("out_dir", ""))
+            self.panels_var.set(data.get("figure_panels", "merge") != "split")
+            self.sheet_var.set(next((t for t, v in SHEETS if v == data.get("figure_sheet", "replace")), SHEETS[2][0]))
+            self.eqcheck_var.set(data.get("equation_check", True))
             self.offline_var.set(data.get("offline", False))
             self.extra_var.set(data.get("extra", ""))
             self._toggle_outdir()
@@ -885,6 +902,9 @@ def launch_gui() -> int:
                 "doc_type": dict(DOC_TYPES).get(self.doctype_var.get(), "auto"),
                 "beside": self.beside_var.get(),
                 "out_dir": self.outdir_var.get(),
+                "figure_panels": "merge" if self.panels_var.get() else "split",
+                "figure_sheet": dict(SHEETS)[self.sheet_var.get()],
+                "equation_check": self.eqcheck_var.get(),
                 "offline": self.offline_var.get(),
                 "extra": self.extra_var.get(),
             }

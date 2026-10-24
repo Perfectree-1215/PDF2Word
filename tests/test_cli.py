@@ -43,6 +43,15 @@ def test_math_zooms_reach_the_options():
     assert options_from_args(_parse()).math_zooms is None
 
 
+# ----------------------------------------------------------------------------- --figure-panels
+
+def test_figure_panels_default_and_choice(capsys):
+    assert _parse().figure_panels == "merge"
+    assert options_from_args(_parse()).figure_panels == "merge"
+    assert options_from_args(_parse("--figure-panels", "split")).figure_panels == "split"
+    assert "--figure-panels" in _refused(capsys, "--figure-panels", "both")
+
+
 # ----------------------------------------------------------------------------- blank --chapters
 
 def test_blank_chapters_are_refused(capsys):
@@ -50,3 +59,31 @@ def test_blank_chapters_are_refused(capsys):
         assert "--chapters" in _refused(capsys, "--chapters", bad), repr(bad)
     assert _parse("--chapters", "3,4.2").chapters == "3,4.2"
     assert _parse().chapters is None
+
+
+# ----------------------------------------------------------------------------- --figure-sheet / --sheet-dpi
+
+def test_figure_sheet_and_sheet_dpi_default_choice_and_refusal(capsys):
+    assert (_parse().figure_sheet, _parse().sheet_dpi) == ("replace", 120)         # sheets by default (2026-10-24)
+    opt = options_from_args(_parse())
+    assert (opt.figure_sheet, opt.sheet_dpi) == ("replace", 120)
+    assert options_from_args(_parse("--figure-sheet", "none")).figure_sheet == "none"
+    opt = options_from_args(_parse("--figure-sheet", "replace", "--sheet-dpi", "200"))
+    assert (opt.figure_sheet, opt.sheet_dpi) == ("replace", 200)
+    assert "--figure-sheet" in _refused(capsys, "--figure-sheet", "both")
+    assert "--sheet-dpi" in _refused(capsys, "--sheet-dpi", "high")
+
+
+# ----------------------------------------------------------------------------- --math-mode / --no-equation-check
+
+def test_math_mode_default_is_latex_and_both_stays_available(capsys):
+    assert _parse().math_mode == "latex"                                   # the check page replaces the image above every equation
+    assert options_from_args(_parse()).math_mode == "latex"
+    assert options_from_args(_parse("--math-mode", "both")).math_mode == "both"
+    assert "--math-mode" in _refused(capsys, "--math-mode", "text")
+
+
+def test_no_equation_check_reaches_the_options():
+    assert _parse().no_equation_check is False
+    assert options_from_args(_parse()).equation_check is True
+    assert options_from_args(_parse("--no-equation-check")).equation_check is False

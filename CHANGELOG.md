@@ -3,6 +3,48 @@
 버전은 `pdf2word/__init__.py`의 `__version__` 한 곳에서 관리합니다. 형식은 `MAJOR.MINOR.PATCH`이며
 GUI와 결과물에는 `v1.0`처럼 앞 두 자리만 표시합니다.
 
+## v2.0.0 — 2026-10-24
+
+주 용도를 **LLM 위키 인제스트**(Obsidian 볼트를 Claude 등 LLM이 읽는 자료로 쓰는 것)로 잡고 Obsidian 출력의 기본 동작을 바꿨습니다.
+그림은 같은 캡션의 패널을 한 장으로 합치고(`--figure-panels merge`) 노트의 이미지를 논문 식별자가 붙은 모음 시트 몇 장으로 묶으며
+(`--figure-sheet replace`, paper-01 이미지 19장 → 시트 2장, 비전 토큰 −51%), 수식은 OCR 결과(LaTeX)만 넣고(`--math-mode latex`) 변환 뒤
+`<출력 파일>.equations.html`에서 PDF 크롭과 나란히 검토·수정합니다. 기본값으로 만든 노트의 모습이 1.x와 달라지므로(개별 `fig3.png` 대신
+시트, 검증된 수식에 이미지 없음, 번호 없는 식에도 `^eq-uNN` 앵커) 주 버전을 올립니다. 예전 출력은
+`--figure-sheet none --figure-panels split --math-mode both`. Word 출력은 그대로입니다. 테스트 222 → 260개.
+
+- 변환 뒤 모든 디스플레이 수식을 나란히 검토하는 `<출력 파일>.equations.html`(`--no-equation-check`로 끔, `Options.equation_check` 기본 켬)을 추가함
+  (GUI는 ∑ 수식 카드의 체크박스 "변환 뒤 수식 검토 페이지 만들기"): `pdf2word/eqcheck.py`가 `converter._run`의 끝에서 변환기가 기록한 수식마다
+  쪽·식 번호·PDF 크롭(base64)·LaTeX·KaTeX 렌더링을 한 장의 HTML로 씀. Edge·Chrome에서는 "MD 파일 연결" 뒤 고친 LaTeX를 MD의 해당 `$$ … $$` 블록에
+  제자리 저장하고(`\tag{n}`까지 포함한 정확한 블록만 찾으므로 다른 곳은 건드리지 않음), 다른 브라우저는 수정본을 다운로드하며, Word 출력은 보기만 함.
+  렌더링은 KaTeX CDN이라 인터넷이 필요하고 오프라인이면 LaTeX 원문만 보임. 페이지는 MD를 연결할 때 **현재 내용**을 읽어 식마다 블록 앵커로
+  `$$` 블록을 찾으므로 여러 번 이어서 검토할 수 있고(고친 식은 "수정 반영됨", 확인만 한 식은 "검토 완료" 체크를 브라우저에 기억), 한 쪽에
+  5·10·20개씩 나눠 봄. 이를 위해 번호 없는 식에도 `^eq-u01`, `^eq-u02` … 블록 앵커를 `$$` 블록(또는 이미지) 다음 줄에 붙임(MD 출력 변경).
+  이유: 수식 검토를 MD 속 이미지 대신 이 페이지에서 하게 하려는 것
+  (`docs/decisions/equation-check-html.md`)
+- **기본 동작 변경**: `--math-mode` 기본값이 `both`에서 `latex`로 바뀜(GUI "표시" 콤보의 첫 항목이 "OCR 결과만"): 수식마다 넣던 원본 크롭 이미지를
+  기본 출력에서 빼고, OCR이 읽지 못했거나 신뢰도가 낮거나 텍스트 레이어로 검증하지 못한 식에만 이미지를 남김. 모든 식에 이미지를 넣으려면 `--math-mode both`.
+  이유: 검토는 위의 수식 검토 페이지에서 하므로 노트에 수식 이미지가 중복될 필요가 없고, LLM 인제스트에서 이미지 읽기 비용이 줄어듦(2026-10-24 사용자 결정)
+- **기본 동작 변경**: `--figure-sheet` 기본값이 `none`에서 `replace`로 바뀜(GUI "그림 파일" 콤보는 ⚙ 기타 옵션 카드로 옮기고 "모음 시트만"이 기본, GUI는 값과 무관하게
+  항상 `--figure-sheet <값>`을 넘김): Obsidian 출력에서 그림이 기본적으로 모음 시트 몇 장으로 묶이고 개별 `fig3.png`는 지워짐. 예전 개별 파일은 `--figure-sheet none`.
+  Word 출력은 그대로. 이유: LLM 위키 인제스트가 이 도구의 주 용도이고 이미지 파일마다 읽기가 한 번 듦(2026-10-24 사용자 결정,
+  `docs/decisions/figures-for-llm-ingest.md`)
+- 노트가 임베드한 이미지를 라벨 붙은 모음 시트 몇 장으로 묶는 `--figure-sheet add|replace`와 타일 해상도 `--sheet-dpi 120`을 추가함
+  (GUI는 "그림 파일" 콤보): `pdf2word/sheets.py`가 한 장이 Claude 원본 해상도 한도(긴 변 2,000 px(API 한도는 2,576이나 Claude Code Read 도구가 약 2,000으로 줄임)·28 px 패치
+  4,784개) 안에 들도록 타일을 높이순으로 정렬해 선반 패킹함(여백이 줄고, 라벨이 있어 문서 순서는 필요 없음). 측정: paper-01 이미지 19장이 시트 2장이 되고
+  토큰은 12,637 → 6,180(−51%, 문서 순서·150 dpi에서는 시트 3장 11,556). `replace`는 개별 PNG를 지우고 본문 임베드를 `*[Fig. 3 → _asset-Wang-2014/Wang-2014-sheet-1.png]*`로 바꾸며 끝에
+  `## 그림 모음 (figure sheets)` 절을 붙이고, 프론트매터에 `figure_sheets: N`과 `figure_sheet_files:` 목록을 적음. 시트 파일은
+  `Wang-2014-sheet-1.png`처럼 논문 식별자(자산 폴더명)로 시작하고 위쪽에 `Wang-2014 · sheet 1/2` 제목 띠가 있어, 여러 논문을 한 컨텍스트에
+  올리거나 첨부해도 어느 논문의 그림인지 섞이지 않음. Word 출력은 그대로. 재변환 때는 이전 `<논문>-sheet-N.png`도 생성물로 보고 지움. 이유: LLM 위키 인제스트에서 이미지 파일마다 읽기가 한 번이라 파일 수를 줄여야 함(`docs/decisions/figures-for-llm-ingest.md` B3)
+- 같은 캡션의 그림 패널을 한 장으로 합치는 `--figure-panels merge`(기본)를 추가하고 `split`으로 예전처럼 패널마다 파일을 남길 수 있게 함
+  (GUI는 저장 위치와 형식 카드의 체크박스). **기본 동작 변경**: 패널이 나뉜 PDF의 그림 파일이 `fig2a.png`·`fig2b.png`에서 `fig2.png` 한 장이 됨: `_DocContext._panel_groups`가 같은 캡션에 붙는 picture 박스를 묶어 합집합 영역을 한 번에
+  렌더링하고(`fig2.png`), 캡션이 없는 12 pt 이내 인접 조각도 편입함. 안전 조건: 패널 사이에 본문이 10%·120자를 넘게 있거나, 합집합이
+  다른 박스와 20% 이상 겹치거나, 합집합 면적이 패널 면적 합의 3배를 넘으면 병합하지 않고 패널별 파일(`fig2a.png`·`fig2b.png`)로
+  남김(`_merge_blocker`). 이유: LLM 위키 인제스트에서 그림 한 장이 비전 호출 한 번이라 패널 수만큼 같은 그림의 토큰이 중복됨
+  (`docs/decisions/figures-for-llm-ingest.md`, `docs/issues/figure-panel-merge.md`)
+- 릴리스 소스 zip 정리: GitHub 릴리스의 "Source code (zip)"에 실행에 필요한 파일(런처·`pdf2word/`·pyproject·requirements·uv.lock·
+  .python-version·README·CHANGELOG)만 들어가고 tests·docs·tools·bench·`.claude`·`.obsidian`·CLAUDE.md는 빠집니다(`.gitattributes`의
+  `export-ignore`). 앱 동작과는 무관합니다.
+
 ## v1.5.0 — 2026-10-23
 
 수식 OCR 엔진을 Pix2Text MFR(`p2t`, CPU ONNX)로 바꾸고 기본값으로 삼았습니다. 깨진 텍스트 레이어의 식은 배율 간 일치도로 검증하고,
