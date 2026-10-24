@@ -136,7 +136,13 @@ Theory Guide로 확인했습니다. 새 PC에서는 같은 종류의 PDF를 아�
 1. `pdf2word/__init__.py`의 `__version__`만 올립니다(`pyproject.toml`이 읽어 가고 GUI 제목에도 표시).
 2. `CHANGELOG.md`의 `## 미공개`를 `## vX.Y.Z — 날짜`로 바꾸고 새 `## 미공개`는 다음 변경 때 만듭니다.
 3. `python -m pytest tests -q`, 그리고 세 종류 PDF 변환을 한 번씩.
-4. 커밋 메시지는 지금까지처럼 `vX.Y.Z: 한 줄 요약` 형식이고 태그는 따로 쓰지 않습니다.
+4. 커밋 메시지는 지금까지처럼 `vX.Y.Z: 한 줄 요약` 형식. 브랜치에서 PR로 main에 합치고, 머지된 브랜치는 저장소 설정
+   (Settings → General → *Automatically delete head branches*)이 지웁니다. 로컬에서 태그를 따로 만들지 않습니다.
+5. 릴리스는 GitHub **Releases**에서 main의 머지 커밋에 태그 `vX.Y.Z`를 붙여 만들고 본문에 CHANGELOG의 해당 절을 붙입니다.
+   첨부 파일 없이 GitHub가 만드는 "Source code (zip)"이 배포본인데, 이 zip은 `git archive`라서 `.gitattributes`의 `export-ignore`
+   경로(tests·docs·tools·bench·`.claude`·`.obsidian`·CLAUDE.md·dotfile)가 빠지고 실행에 필요한 파일(런처·`pdf2word/`·pyproject·
+   requirements·uv.lock·.python-version·README·CHANGELOG)만 들어갑니다. 실행에 필요 없는 파일이나 폴더를 새로 추가하면
+   `export-ignore` 목록에도 올립니다. 확인: `git archive --format=zip -o out/src.zip HEAD` 뒤 `python -m zipfile -l out/src.zip`.
 
 ## 7. 환경별로 겪은 문제
 

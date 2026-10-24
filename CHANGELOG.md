@@ -41,6 +41,9 @@ GUI와 결과물에는 `v1.0`처럼 앞 두 자리만 표시합니다.
   다른 박스와 20% 이상 겹치거나, 합집합 면적이 패널 면적 합의 3배를 넘으면 병합하지 않고 패널별 파일(`fig2a.png`·`fig2b.png`)로
   남김(`_merge_blocker`). 이유: LLM 위키 인제스트에서 그림 한 장이 비전 호출 한 번이라 패널 수만큼 같은 그림의 토큰이 중복됨
   (`docs/decisions/figures-for-llm-ingest.md`, `docs/issues/figure-panel-merge.md`)
+- 릴리스 소스 zip 정리: GitHub 릴리스의 "Source code (zip)"에 실행에 필요한 파일(런처·`pdf2word/`·pyproject·requirements·uv.lock·
+  .python-version·README·CHANGELOG)만 들어가고 tests·docs·tools·bench·`.claude`·`.obsidian`·CLAUDE.md는 빠집니다(`.gitattributes`의
+  `export-ignore`). 앱 동작과는 무관합니다.
 
 ## v1.5.0 — 2026-10-23
 

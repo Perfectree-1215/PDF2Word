@@ -21,3 +21,19 @@ uv.lock text
 *.pdf binary
 *.docx binary
 *.onnx binary
+
+# Release archives.  The "Source code (zip / tar.gz)" GitHub attaches to a release is
+# `git archive`, which drops export-ignore paths.  Ship only what running the app needs:
+# main_gui.bat, main_gui.py, pdf2word/, pyproject.toml, requirements.txt, uv.lock,
+# .python-version, README.md, CHANGELOG.md.  Development-only files stay in the
+# repository but not in the archive.
+.gitattributes export-ignore
+.gitignore export-ignore
+.editorconfig export-ignore
+CLAUDE.md export-ignore
+.claude/ export-ignore
+.obsidian/ export-ignore
+docs/ export-ignore
+tests/ export-ignore
+tools/ export-ignore
+bench/ export-ignore
