@@ -41,7 +41,7 @@ def looks_like_caption(text: str) -> bool:
     if _CAPTION_BOLD_RE.match(s):
         return True
     return bool(_CAPTION_PLAIN_RE.match(strip_emphasis(s)))
-GENERATED_RE = re.compile(r"^(fig|table|scheme|algorithm|chart|plate|eq|p\d+-img|inline|sheet)[\w.-]*\.(png|jpg|jpeg)$", re.I)
+GENERATED_RE = re.compile(r"^(?:(?:fig|table|scheme|algorithm|chart|plate|eq|p\d+-img|inline|sheet)[\w.-]*|.*-sheet-\d+)\.(png|jpg|jpeg)$", re.I)
 TEXT_CLASSES = {"text", "list-item", "footnote"}
 
 
@@ -317,21 +317,23 @@ class Converter:
             body = ensure_title(postprocess(body, opt, paper=doc_type == "paper"), meta.title)
             # figure sheets (Markdown only): the embedded images tiled onto a few labelled PNGs.
             # The Word document is built from the original body while the single images still exist.
-            md_body, stale = body, []
+            md_body, stale, sheet_files = body, [], []
             if fmt in ("md", "both") and opt.figure_sheet != "none":
                 from .sheets import apply_sheets
                 try:
                     res = apply_sheets(body, asset_dir, style=opt.image_links, dpi=opt.sheet_dpi,
                                        fallback_dpi=opt.dpi, mode=opt.figure_sheet)
                     md_body, stale = res.body, res.stale
+                    sheet_files = [f"{asset_dir.name}/{s}" for s in res.sheets]
                     stats["figure_sheets"] = len(res.sheets)
                     if res.sheets:
                         log.info("  figure sheets: %d (%d images at %d dpi%s)", len(res.sheets), len(res.tiled),
                                  opt.sheet_dpi, ", single files removed" if stale else "")
                 except Exception as exc:
                     log.warning("  figure sheets failed (%s); images kept as files", exc)
-                    md_body, stale = body, []
-            front = build_frontmatter(meta, pdf_path, asset_dir.name, _version(), self.engine_name, stats)
+                    md_body, stale, sheet_files = body, [], []
+            front = build_frontmatter(meta, pdf_path, asset_dir.name, _version(), self.engine_name, stats,
+                                      sheet_files=sheet_files)
             written = []
             if fmt in ("md", "both"):
                 md_path.write_text(front + md_body, encoding="utf-8")
@@ -346,6 +348,17 @@ class Converter:
                     (asset_dir / name).unlink()
                 except OSError:
                     pass
+            # equation check page: every display equation with its PDF crop and LaTeX, editable back into the .md
+            if getattr(opt, "equation_check", True) and ctx.equations:
+                from .eqcheck import write_equation_check
+                try:
+                    check_path = (md_path if fmt != "docx" else docx_path).with_suffix(".equations.html")
+                    write_equation_check(check_path, ctx.equations, title=meta.title or pdf_path.stem,
+                                         pdf_name=pdf_path.name, md_name=md_path.name if fmt != "docx" else None)
+                    written.append(check_path.name)
+                    log.info("  equation check page: %d equations -> %s", len(ctx.equations), check_path.name)
+                except Exception as exc:
+                    log.warning("  equation check page failed (%s)", exc)
         finally:
             if self._ocr is not None:
                 self._ocr.cache.save()
@@ -480,6 +493,8 @@ class _DocContext:
         self.page_map = page_map               # sub-document page -> page of the full PDF (0-based)
         self.used_names: Counter = Counter()
         self.picture_names: dict = {}          # base -> [filename, ...] (for sub-figure lettering)
+        self.equations: list = []              # every display equation, for the equation check page
+        self.eq_unnumbered = 0                 # u01, u02 ... ids (block anchors) for equations without a number
         self.eq_seq = 0
         self.inline_seq = 0
         self._page_images_cache: dict = {}
@@ -748,6 +763,14 @@ class _DocContext:
             # Not for a garbled *text* layer: that is an ordinary typeset equation, and the heuristic
             # (tuned for vector-drawn glyph clusters) flags legitimate line breaks and spacing.
             result.confidence = min(result.confidence, 0.5)
+        # every equation gets a block anchor (^eq-3, or ^eq-u01 for one without a number): Obsidian links
+        # to it, and the equation check page finds the equation's current $$ block by it after edits
+        if label:
+            uid = label
+        else:
+            self.eq_unnumbered += 1
+            uid = f"u{self.eq_unnumbered:02d}"
+        anchor = block_id("eq", uid) if opt.block_ids else ""
         if result.latex and opt.math_mode != "image":
             body = result.latex
             if label:
@@ -755,36 +778,60 @@ class _DocContext:
             # the cropped original first, OCR result below it (always when the OCR looks doubtful or
             # could not be checked against a text layer)
             if opt.math_mode == "both" or result.uncertain or unverified:
-                fname = self._save_equation_image(result, label, page, region)
+                fname = self._save_equation_image(result, label, page, region, uid)
                 if fname:
                     lines.append(self._embed(fname))
             lines += ["$$", body, "$$"]
-            if label and opt.block_ids:
-                lines.append(block_id("eq", label))
+            if anchor:
+                lines.append(anchor)
             if result.uncertain:
                 lines.append(f"*⚠ OCR 신뢰도 낮음 ({int(result.confidence * 100)}%) · 위 수식 이미지를 확인하세요*")
                 self.stats["eq_uncertain"] += 1
             self.stats["eq_ok"] += 1
         else:
-            fname = self._save_equation_image(result, label, page, region)
+            fname = self._save_equation_image(result, label, page, region, uid)
             if fname:
                 lines.append(self._embed(fname))
             if label:
-                lines.append(f"*Eq. ({label})*" + (" " + block_id("eq", label) if opt.block_ids else ""))
+                lines.append(f"*Eq. ({label})*" + (" " + anchor if anchor else ""))
+            elif anchor:
+                lines.append(anchor)
             if hint:
                 snippet = re.sub(r"\s+", " ", hint)[:300]
                 lines.append(f"%% equation text: {snippet} %%")
             self.stats["eq_fallback"] += 1
+        self._record_equation(result, label, uid, page, region, unverified)
         return "\n".join(lines) + "\n"
 
-    def _save_equation_image(self, result: EquationResult, label: Optional[str], page, region) -> Optional[str]:
+    def _record_equation(self, result: EquationResult, label: Optional[str], uid: str, page, region,
+                         unverified: bool) -> None:
+        """Keep what the equation check page needs: where it is, the LaTeX that went into the document,
+        and the crop of the original (the display-scale image, else a fresh 3x render)."""
+        img = result.image
+        if img is None:
+            try:
+                img = tight_crop(render(page, region, 3.0))
+            except Exception:
+                img = None
+        self.equations.append({
+            "page": self.pdf_page(page), "label": label, "uid": uid, "anchored": bool(self.opt.block_ids),
+            "latex": result.latex or "", "in_md": bool(result.latex and self.opt.math_mode != "image"),
+            "uncertain": bool(result.uncertain), "unverified": bool(unverified),
+            "confidence": round(float(result.confidence), 2), "image": img,
+        })
+
+    def _save_equation_image(self, result: EquationResult, label: Optional[str], page, region,
+                             uid: Optional[str] = None) -> Optional[str]:
         img, zoom = result.image, EquationOCR.DISPLAY_ZOOM
         if img is None:                     # nothing at the display scale (masked or faint): 3x, unmasked
             img, zoom = tight_crop(render(page, region, 3.0)), 3.0
         if img is None:
             return None
         self.eq_seq += 1
-        base = f"eq-{re.sub(r'[^A-Za-z0-9-]+', '-', label)}" if label else f"eq-u{self.eq_seq:02d}"
+        if label:
+            base = f"eq-{re.sub(r'[^A-Za-z0-9-]+', '-', label)}"
+        else:                               # same id as the ^eq-uNN anchor, so file and anchor match
+            base = f"eq-{uid}" if uid else f"eq-u{self.eq_seq:02d}"
         fname = self._unique(base) + ".png"
         dpi = int(round(72 * zoom))
         img.save(self.asset_dir / fname, dpi=(dpi, dpi))   # physical size survives into Word

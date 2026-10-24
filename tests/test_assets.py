@@ -98,7 +98,7 @@ def run(tmp_path, monkeypatch):
         page = doc.new_page(width=595, height=794)
         page.draw_rect(pymupdf.Rect(100, 100, 300, 250), color=(0, 0, 0), fill=(0.4, 0.6, 0.8))
         opt = Options(format=fmt, out_dir=out, math_engine="none", lighten=False, online=False,
-                      vector_math=False, inline_image_math=False, inline_text_math=False)
+                      vector_math=False, inline_image_math=False, inline_text_math=False, figure_sheet="none")
         meta = PaperMeta(title=f"Paper {base_name}", authors=["J. Kim"], first_author="Kim", year=2024)
         try:
             return Converter(opt)._run(doc, out / f"{base_name}.pdf", meta, "paper", base_name, ASSET)
@@ -151,7 +151,7 @@ def test_link_breaking_chars_in_the_pdf_name_keep_the_figure(run, tmp_path):
     doc.save(str(pdf))
     doc.close()
     opt = dict(format="both", out_dir=run.out, math_engine="none", lighten=False, online=False, doc_type="document",
-               vector_math=False, inline_image_math=False, inline_text_math=False)
+               vector_math=False, inline_image_math=False, inline_text_math=False, figure_sheet="none")
 
     whole = Converter(Options(**opt)).convert(pdf)
     conv = Converter(Options(chapters="1", **opt))

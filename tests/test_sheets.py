@@ -9,7 +9,7 @@ import pytest
 
 from pdf2word import sheets
 from pdf2word.config import Options
-from pdf2word.sheets import MAX_EDGE, MAX_PATCHES, Tile, apply_sheets, label_for, pack, patches
+from pdf2word.sheets import MAX_EDGE, MAX_PATCHES, Tile, apply_sheets, label_for, pack, patches, render_sheet, sheet_prefix
 
 ASSET = "_asset-X"
 
@@ -35,9 +35,25 @@ def _sheet_size(placed):
             max(p.y + sheets.LABEL_H + p.h for p in placed) + sheets.GUTTER)
 
 
-def test_default_is_off():
-    assert Options().figure_sheet == "none" and Options().sheet_dpi == 120
+def test_defaults():
+    assert Options().figure_sheet == "replace" and Options().sheet_dpi == 120    # sheets by default (2026-10-24)
     assert sheets.SHEET_EDGE <= sheets.MAX_EDGE
+
+
+def test_sheet_prefix_names_sheets_after_the_paper():
+    assert sheet_prefix("_asset-Wang-2014") == "Wang-2014"
+    assert sheet_prefix("_asset-Wang-2014-2") == "Wang-2014-2"     # second paper of the same author and year
+    assert sheet_prefix("_asset-paper-02") == "paper-02"
+    assert sheet_prefix("figures") == "figures" and sheet_prefix("_asset-") == "paper"
+
+
+def test_title_band_and_korean_paper_id(tmp_path):
+    placed = pack([_tile("fig1.png", 400, 300)])[0]
+    assert placed[0].y == sheets.GUTTER + sheets.TITLE_H           # tiles start below the title band
+    w, h = render_sheet(placed, tmp_path / "a.png", "Wang-2014 · sheet 1/1")
+    assert (w, h) == _size(tmp_path / "a.png") and h >= sheets.TITLE_H + sheets.LABEL_H + 300
+    render_sheet(placed, tmp_path / "b.png", "김-2024 · sheet 1/1")     # Hangul id: built-in Korean font, no error
+    assert _size(tmp_path / "b.png") == (w, h)
 
 
 def test_labels():
@@ -126,41 +142,41 @@ def assets(tmp_path):
 
 def test_replace_mode_rewrites_embeds_and_appends_the_sheet_section(assets):
     res = apply_sheets(BODY, assets, style="wiki", dpi=150, fallback_dpi=200, mode="replace")
-    assert res.sheets == ["sheet-1.png"] and (assets / "sheet-1.png").is_file()
+    assert res.sheets == ["X-sheet-1.png"] and (assets / "X-sheet-1.png").is_file()
     assert res.tiled == ["fig1.png", "eq-1.png", "fig2.png"] and res.stale == res.tiled
-    assert "*[Fig. 1 → sheet-1.png]*" in res.body and "*[Fig. 2 → sheet-1.png]*" in res.body
-    assert "*[Eq. (1) → sheet-1.png]*" in res.body
+    assert "*[Fig. 1 → _asset-X/X-sheet-1.png]*" in res.body and "*[Fig. 2 → _asset-X/X-sheet-1.png]*" in res.body
+    assert "*[Eq. (1) → _asset-X/X-sheet-1.png]*" in res.body            # folder included: unambiguous across papers
     assert "![[_asset-X/fig1.png]]" not in res.body
     assert "![[_asset-X/inline-1.png]] in the sentence" in res.body      # inline symbol: untouched
     assert "![[_asset-X/missing.png]]" in res.body                         # unknown file: untouched
     assert "**Figure 1.** Caption one. ^fig-1" in res.body and "x = 1" in res.body
-    assert "## 그림 모음" in res.body and "sheet-1.png: Fig. 1 · Fig. 2 · Eq. (1)" in res.body   # tallest first
-    assert res.body.rstrip().endswith("![[_asset-X/sheet-1.png]]")
+    assert "## 그림 모음" in res.body and "X-sheet-1.png: Fig. 1 · Fig. 2 · Eq. (1)" in res.body   # tallest first
+    assert res.body.rstrip().endswith("![[_asset-X/X-sheet-1.png]]")
     for name in res.tiled:                                                 # nothing deleted here
         assert (assets / name).is_file()
-    w, h = _size(assets / "sheet-1.png")
+    w, h = _size(assets / "X-sheet-1.png")
     assert max(w, h) <= MAX_EDGE and patches(w, h) <= MAX_PATCHES
     assert w >= 900 + 2 * sheets.GUTTER                 # fig1 at 150 dpi: 1200 px * 150/200 = 900 px wide
 
 
 def test_add_mode_keeps_the_embeds(assets):
     res = apply_sheets(BODY, assets, mode="add")
-    assert res.stale == [] and res.sheets == ["sheet-1.png"]
-    assert "![[_asset-X/fig1.png]]" in res.body and "![[_asset-X/sheet-1.png]]" in res.body
+    assert res.stale == [] and res.sheets == ["X-sheet-1.png"]
+    assert "![[_asset-X/fig1.png]]" in res.body and "![[_asset-X/X-sheet-1.png]]" in res.body
 
 
 def test_markdown_link_style(assets):
     body = "![fig1](_asset-X/fig1.png)\n\ntext\n\n![fig 2](_asset-X/fig2.png)\n"
     res = apply_sheets(body, assets, style="markdown", mode="replace")
     assert res.tiled == ["fig1.png", "fig2.png"]
-    assert "*[Fig. 1 → sheet-1.png]*" in res.body and "![sheet-1](_asset-X/sheet-1.png)" in res.body
+    assert "*[Fig. 1 → _asset-X/X-sheet-1.png]*" in res.body and "![X-sheet-1](_asset-X/X-sheet-1.png)" in res.body
 
 
 def test_other_folder_or_no_embeds_changes_nothing(assets):
     body = "![[_asset-Y/fig1.png]]\n"
     res = apply_sheets(body, assets)
     assert res.sheets == [] and res.body == body
-    assert not (assets / "sheet-1.png").exists()
+    assert not list(assets.glob("*-sheet-*.png"))
 
 
 def test_many_big_figures_span_several_sheets(tmp_path):
@@ -175,11 +191,11 @@ def test_many_big_figures_span_several_sheets(tmp_path):
     for s in res.sheets:
         w, h = _size(d / s)
         assert max(w, h) <= sheets.SHEET_EDGE and patches(w, h) <= MAX_PATCHES
-    assert all(f"*[Fig. {i} → sheet-" in res.body for i in range(1, 9))
-    assert "sheet-1.png: Fig. 1 · Fig. 2 · Fig. 3 · Fig. 4 · Fig. 5 · Fig. 6" in res.body
-    assert "sheet-2.png: Fig. 7 · Fig. 8" in res.body
+    assert all(f"*[Fig. {i} → _asset-X/X-sheet-" in res.body for i in range(1, 9))
+    assert "X-sheet-1.png: Fig. 1 · Fig. 2 · Fig. 3 · Fig. 4 · Fig. 5 · Fig. 6" in res.body
+    assert "X-sheet-2.png: Fig. 7 · Fig. 8" in res.body
     res150 = apply_sheets(body, d, mode="add", dpi=150)   # sharper 951 x 703 tiles: only four per sheet
-    assert len(res150.sheets) == 2 and "sheet-1.png: Fig. 1 · Fig. 2 · Fig. 3 · Fig. 4\n" in res150.body
+    assert len(res150.sheets) == 2 and "X-sheet-1.png: Fig. 1 · Fig. 2 · Fig. 3 · Fig. 4\n" in res150.body
 
 
 # ----------------------------------------------------------------------------- whole conversions
@@ -215,27 +231,40 @@ def convert_one(tmp_path, monkeypatch):
 
 def test_replace_sheets_in_a_markdown_conversion(convert_one):
     res = convert_one("md", figure_sheet="replace")
-    assert sorted(p.name for p in res.asset_dir.iterdir()) == ["sheet-1.png"]
+    assert sorted(p.name for p in res.asset_dir.iterdir()) == ["Kim-2024-sheet-1.png"]
     md = res.md_path.read_text(encoding="utf-8")
-    assert "figure_sheets: 1" in md and "*[p1-img1 → sheet-1.png]*" in md
-    assert "![[_asset-Kim-2024/sheet-1.png]]" in md and "![[_asset-Kim-2024/p1-img1.png]]" not in md
+    assert "figure_sheets: 1" in md and "*[p1-img1 → _asset-Kim-2024/Kim-2024-sheet-1.png]*" in md
+    assert 'figure_sheet_files:\n  - "_asset-Kim-2024/Kim-2024-sheet-1.png"' in md
+    assert "![[_asset-Kim-2024/Kim-2024-sheet-1.png]]" in md and "![[_asset-Kim-2024/p1-img1.png]]" not in md
     assert res.stats["figure_sheets"] == 1
 
 
 def test_both_formats_build_the_docx_before_the_single_images_go(convert_one):
     res = convert_one("both", figure_sheet="replace")
     assert res.docx_path.is_file() and res.md_path.is_file()
-    assert (res.asset_dir / "sheet-1.png").is_file() and not (res.asset_dir / "p1-img1.png").exists()
+    assert (res.asset_dir / "Kim-2024-sheet-1.png").is_file() and not (res.asset_dir / "p1-img1.png").exists()
+
+
+def test_reconversion_removes_old_sheets(convert_one):
+    convert_one("md", figure_sheet="replace")
+    res = convert_one("md", figure_sheet="none")             # same output folder, sheets off: old sheet is a generated file
+    assert sorted(p.name for p in res.asset_dir.iterdir()) == ["p1-img1.png"]
 
 
 def test_add_mode_in_a_conversion_keeps_the_single_images(convert_one):
     res = convert_one("md", figure_sheet="add")
-    assert sorted(p.name for p in res.asset_dir.iterdir()) == ["p1-img1.png", "sheet-1.png"]
+    assert sorted(p.name for p in res.asset_dir.iterdir()) == ["Kim-2024-sheet-1.png", "p1-img1.png"]
     md = res.md_path.read_text(encoding="utf-8")
-    assert "![[_asset-Kim-2024/p1-img1.png]]" in md and "![[_asset-Kim-2024/sheet-1.png]]" in md
+    assert "![[_asset-Kim-2024/p1-img1.png]]" in md and "![[_asset-Kim-2024/Kim-2024-sheet-1.png]]" in md
 
 
-def test_default_conversion_makes_no_sheet(convert_one):
-    res = convert_one("md")
+def test_default_conversion_makes_sheets(convert_one):
+    res = convert_one("md")                                   # figure_sheet defaults to "replace"
+    assert sorted(p.name for p in res.asset_dir.iterdir()) == ["Kim-2024-sheet-1.png"]
+    assert "figure_sheets: 1" in res.md_path.read_text(encoding="utf-8")
+
+
+def test_sheets_off_keeps_the_single_images(convert_one):
+    res = convert_one("md", figure_sheet="none")
     assert sorted(p.name for p in res.asset_dir.iterdir()) == ["p1-img1.png"]
     assert "figure_sheets" not in res.md_path.read_text(encoding="utf-8")

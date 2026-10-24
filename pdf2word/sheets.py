@@ -29,7 +29,9 @@ SHEET_EDGE = 2000        # px, the default sheet edge: Claude Code's Read tool w
                          # to about 2,000 px, and on paper-01 the smaller edge costs no extra sheets or tokens
 GUTTER = 16              # px between tiles and around the sheet
 LABEL_H = 26             # label strip above every tile
+TITLE_H = 30             # title band at the top of every sheet: "<paper> · sheet 1/2"
 FONT_SIZE = 13
+TITLE_FONT = 15
 SECTION_TITLE = "그림 모음 (figure sheets)"
 
 # a line that is nothing but an embed: ![[folder/file.png]] (Obsidian, optional |alias) or ![alt](folder/file.png)
@@ -59,6 +61,22 @@ def label_for(name: str) -> str:
 
 def patches(width: int, height: int) -> int:
     return math.ceil(width / PATCH) * math.ceil(height / PATCH)
+
+
+def sheet_prefix(asset_folder: str) -> str:
+    """The paper id that names the sheets: `_asset-Wang-2014` -> `Wang-2014`, so that sheets of
+    several papers never share a file name (`Wang-2014-sheet-1.png`) even when uploaded together."""
+    name = asset_folder[len("_asset-"):] if asset_folder.startswith("_asset-") else asset_folder
+    return name.strip("-") or "paper"
+
+
+def _title_font(text: str) -> str:
+    """Helvetica-Bold for Latin text; PyMuPDF's built-in Korean font when the paper id has Hangul."""
+    try:
+        text.encode("latin-1")
+        return "hebo"
+    except UnicodeEncodeError:
+        return "korea"
 
 
 @dataclass
@@ -104,11 +122,11 @@ def load_tile(path: Path, dpi: int, fallback_dpi: int) -> Optional[Tile]:
 
 def _fit(t: Tile, max_edge: int, max_patches: int) -> tuple:
     """Tile size on a sheet: shrunk only when the tile alone would exceed the sheet limits."""
-    s = min(1.0, (max_edge - 2 * GUTTER) / t.w, (max_edge - 2 * GUTTER - LABEL_H) / t.h)
+    s = min(1.0, (max_edge - 2 * GUTTER) / t.w, (max_edge - 2 * GUTTER - LABEL_H - TITLE_H) / t.h)
     tw, th = t.w, t.h
     for _ in range(80):
         tw, th = max(1, int(t.w * s)), max(1, int(t.h * s))
-        if patches(tw + 2 * GUTTER, th + LABEL_H + 2 * GUTTER) <= max_patches:
+        if patches(tw + 2 * GUTTER, th + LABEL_H + TITLE_H + 2 * GUTTER) <= max_patches:
             break
         s *= 0.97
     return tw, th
@@ -130,7 +148,7 @@ def pack(tiles: list, max_edge: int = SHEET_EDGE, max_patches: int = MAX_PATCHES
         sized.sort(key=lambda s: -s[2])                     # stable: equal heights keep document order
     sheets: list = []
     cur: list = []
-    x = y = GUTTER
+    x, y = GUTTER, GUTTER + TITLE_H                     # tiles start below the title band
     shelf_h = used_w = 0
     for t, tw, th in sized:
         need = LABEL_H + th
@@ -141,7 +159,7 @@ def pack(tiles: list, max_edge: int = SHEET_EDGE, max_patches: int = MAX_PATCHES
         else:
             if cur:
                 sheets.append(cur)                      # next sheet
-            cur, x, y, shelf_h, used_w = [], GUTTER, GUTTER, 0, 0
+            cur, x, y, shelf_h, used_w = [], GUTTER, GUTTER + TITLE_H, 0, 0
         cur.append(Placed(t, x, y, tw, th))
         used_w = max(used_w, x + tw + GUTTER)
         x += tw + GUTTER
@@ -151,13 +169,16 @@ def pack(tiles: list, max_edge: int = SHEET_EDGE, max_patches: int = MAX_PATCHES
     return sheets
 
 
-def render_sheet(placed: list, path: Path) -> tuple:
-    """Draw one sheet (label strip + bordered tile each) and save it; returns (width, height) in px."""
+def render_sheet(placed: list, path: Path, title: str = "") -> tuple:
+    """Draw one sheet (title band, then a label strip + bordered tile each) and save it;
+    returns (width, height) in px."""
     width = max(p.x + p.w for p in placed) + GUTTER
     height = max(p.y + LABEL_H + p.h for p in placed) + GUTTER
     doc = pymupdf.open()
     try:
         page = doc.new_page(width=width, height=height)          # 1 pt = 1 px at get_pixmap(Identity)
+        if title:
+            page.insert_text((GUTTER, GUTTER + TITLE_H - 9), title, fontsize=TITLE_FONT, fontname=_title_font(title))
         for p in placed:
             page.insert_text((p.x + 2, p.y + LABEL_H - 7), p.tile.label, fontsize=FONT_SIZE, fontname="helv")
             rect = pymupdf.Rect(p.x, p.y + LABEL_H, p.x + p.w, p.y + LABEL_H + p.h)
@@ -173,10 +194,11 @@ def render_sheet(placed: list, path: Path) -> tuple:
 def apply_sheets(body: str, asset_dir: Path, style: str = "wiki", dpi: int = 120, fallback_dpi: int = 200,
                  mode: str = "replace", by_height: bool = True, max_edge: int = SHEET_EDGE) -> SheetResult:
     """Tile the images `body` embeds (block-level lines pointing into `asset_dir`) onto
-    sheet-N.png files in `asset_dir` and rewrite the body: mode "replace" turns each embed line
-    into `*[Fig. 3 → sheet-1.png]*`, mode "add" keeps the embeds; both append a section listing
-    the sheets. Nothing is deleted here - `stale` names the files the caller removes after every
-    output (Word included) has been written."""
+    `<paper>-sheet-N.png` files in `asset_dir` and rewrite the body: mode "replace" turns each embed
+    line into `*[Fig. 3 → _asset-Wang-2014/Wang-2014-sheet-1.png]*` (folder included, so the marker
+    stays unambiguous when several papers share a context), mode "add" keeps the embeds; both append
+    a section listing the sheets. Nothing is deleted here - `stale` names the files the caller
+    removes after every output (Word included) has been written."""
     folder = asset_dir.name
     found: list = []                                   # (match, file name) in document order
     for m in EMBED_LINE.finditer(body):
@@ -201,11 +223,12 @@ def apply_sheets(body: str, asset_dir: Path, style: str = "wiki", dpi: int = 120
     if not tiles:
         return SheetResult(body)
     sheets = pack(tiles, max_edge=max_edge, by_height=by_height)
+    prefix = sheet_prefix(folder)
     sheet_of: dict = {}
     names: list = []
     for i, placed in enumerate(sheets, 1):
-        sname = f"sheet-{i}.png"
-        render_sheet(placed, asset_dir / sname)
+        sname = f"{prefix}-sheet-{i}.png"
+        render_sheet(placed, asset_dir / sname, f"{prefix} · sheet {i}/{len(sheets)}")
         names.append(sname)
         for p in placed:
             sheet_of[p.tile.name] = sname
@@ -216,7 +239,7 @@ def apply_sheets(body: str, asset_dir: Path, style: str = "wiki", dpi: int = 120
             name = ref.rsplit("/", 1)[-1]
             if ref.rsplit("/", 1)[0] != folder or name not in sheet_of:
                 return m.group(0)
-            return f"*[{label_for(name)} → {sheet_of[name]}]*"
+            return f"*[{label_for(name)} → {folder}/{sheet_of[name]}]*"
         body = EMBED_LINE.sub(marker, body)
     lines = [f"\n\n## {SECTION_TITLE}\n"]
     for sname, placed in zip(names, sheets):

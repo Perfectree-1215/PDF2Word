@@ -53,7 +53,7 @@ class Options:
     ocr_pages: bool = False                     # Tesseract OCR for scanned pages (needs tesseract)
     lighten: bool = True                        # merge clusters of tiny images before layout analysis
     figure_panels: str = "merge"                # "merge" = panels of one captioned figure in one image | "split" = one image per panel
-    figure_sheet: str = "none"                  # "none" | "add" | "replace": tile every embedded image onto a few labelled sheet-N.png
+    figure_sheet: str = "replace"               # "none" | "add" | "replace": tile every embedded image onto a few labelled sheet-N.png
                                                 # (Markdown only; "replace" drops the single image files) - for LLM ingest
     sheet_dpi: int = 120                        # tile resolution on the sheets (150 for sharper subscripts, more sheets)
 
@@ -61,7 +61,8 @@ class Options:
     math_engine: str = "p2t"                    # "p2t" | "rapid" | "claude" | "none"
     math_zooms: tuple | None = None             # render scales tried in order; None = the engine's own order (p2t 4,3,2 / rapid 2,3,4)
     math_max_tokens: int = 320                  # decoder length cap (rapid engine)
-    math_mode: str = "both"                     # "both" (image + LaTeX below) | "latex" | "image"
+    math_mode: str = "latex"                    # "latex" (OCR result; image only when unsure/unverified) | "both" (image + LaTeX below) | "image"
+    equation_check: bool = True                 # write <output>.equations.html: every display equation, PDF crop beside its LaTeX
     inline_image_math: bool = True              # OCR small images embedded in text lines
     inline_text_math: bool = True               # text-layer inline math (ρ_f, u_i) -> $...$
     vector_math: bool = True                    # equations/symbols drawn as vector paths (manuals) -> OCR

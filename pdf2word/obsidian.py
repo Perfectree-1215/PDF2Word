@@ -37,7 +37,7 @@ def block_id(prefix: str, label: str) -> str:
 # ----------------------------------------------------------------------------- frontmatter
 
 def build_frontmatter(meta, pdf_path: Path, asset_dir_name: str, version: str, engine: str,
-                      stats: dict | None = None) -> str:
+                      stats: dict | None = None, sheet_files: list | None = None) -> str:
     lines = ["---", f"title: {yaml_str(meta.title or pdf_path.stem)}"]
     if meta.authors:
         lines.append("authors:")
@@ -88,6 +88,9 @@ def build_frontmatter(meta, pdf_path: Path, asset_dir_name: str, version: str, e
                 lines.append(f"equations_unverified: {stats['eq_unverified']}")
         if stats.get("figure_sheets"):
             lines.append(f"figure_sheets: {stats['figure_sheets']}")
+            if sheet_files:                           # folder-qualified, so an ingest agent can open them directly
+                lines.append("figure_sheet_files:")
+                lines += [f"  - {yaml_str(f)}" for f in sheet_files]
     lines.append("---")
     return "\n".join(lines) + "\n\n"
 

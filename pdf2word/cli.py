@@ -86,9 +86,9 @@ def build_parser() -> argparse.ArgumentParser:
     g = p.add_argument_group("equations")
     g.add_argument("--math-engine", choices=["p2t", "rapid", "claude", "none"], default="p2t",
                    help="p2t = local Pix2Text MFR 1.5 (CPU, downloads 120 MB once; falls back to rapid); rapid = local RapidLaTeXOCR (CPU); claude = Claude vision API; none = images only")
-    g.add_argument("--math-mode", choices=["both", "latex", "image"], default="both",
-                   help="both = cropped equation image with the OCR result below it; "
-                        "latex = OCR result only (image fallback); image = no OCR output")
+    g.add_argument("--math-mode", choices=["both", "latex", "image"], default="latex",
+                   help="latex = OCR result only, the cropped image stays where the reading is unsure or unverified (default); "
+                        "both = cropped equation image with the OCR result below it; image = no OCR output")
     g.add_argument("--math-zooms", type=_zooms, default=None,
                    help="render scales tried in order; omit for the engine's own (p2t 4,3,2 / rapid 2,3,4)")
     g.add_argument("--math-max-tokens", type=int, default=320, help="decoder length cap (rapid engine)")
@@ -100,6 +100,8 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--claude-model", default="claude-opus-5-5")
     g.add_argument("--claude-effort", default="low", choices=["low", "medium", "high"])
     g.add_argument("--no-cache", action="store_true", help="disable the OCR result cache")
+    g.add_argument("--no-equation-check", action="store_true",
+                   help="skip the equation check page (<output>.equations.html)")
 
     g = p.add_argument_group("layout / output")
     g.add_argument("--pages", help="page range in PDF order, 1-based, e.g. 1-5,8; printed page numbers "
@@ -107,9 +109,9 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--dpi", type=int, default=200, help="figure resolution")
     g.add_argument("--figure-panels", choices=["merge", "split"], default="merge",
                    help="panels of one captioned figure as one image (merge, default) or one image per panel (split)")
-    g.add_argument("--figure-sheet", choices=["none", "add", "replace"], default="none",
+    g.add_argument("--figure-sheet", choices=["none", "add", "replace"], default="replace",
                    help="tile every embedded image onto a few labelled sheet-N.png for LLM ingest (Markdown only): "
-                        "add = keep the single files too, replace = sheets only")
+                        "replace = sheets only (default), add = keep the single files too, none = single files only")
     g.add_argument("--sheet-dpi", type=int, default=120,
                    help="tile resolution on the figure sheets (150 for sharper subscripts, more sheets)")
     g.add_argument("--image-links", choices=["wiki", "markdown"], default="wiki",
@@ -164,7 +166,8 @@ def options_from_args(args) -> Options:
         math_max_tokens=args.math_max_tokens, math_mode=args.math_mode,
         inline_image_math=not args.no_inline_math, inline_text_math=not args.no_inline_text_math,
         vector_math=not args.no_vector_math, claude_model=args.claude_model,
-        claude_effort=args.claude_effort, cache=not args.no_cache, verbose=args.verbose,
+        claude_effort=args.claude_effort, cache=not args.no_cache, equation_check=not args.no_equation_check,
+        verbose=args.verbose,
     )
 
 

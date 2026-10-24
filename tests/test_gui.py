@@ -187,11 +187,21 @@ def test_status_text_names_the_engines_model():
 
 
 def test_figure_sheet_combo_values_reach_the_parser():
-    # the combo lives inside launch_gui; _argv adds ["--figure-sheet", value] only when the value is not "none"
-    assert dict(main_gui.SHEETS)["개별 파일 (기본)"] == "none"
+    # the combo lives inside launch_gui; _argv always adds ["--figure-sheet", value] (safe whatever the default is)
+    assert dict(main_gui.SHEETS)["모음 시트만 (LLM 인제스트용, 기본)"] == "replace"
+    assert dict(main_gui.SHEETS)["개별 파일"] == "none"
     for _text, value in main_gui.SHEETS:
-        tokens = [] if value == "none" else ["--figure-sheet", value]
-        assert build_parser().parse_args(["x.pdf"] + tokens).figure_sheet == value
+        assert build_parser().parse_args(["x.pdf", "--figure-sheet", value]).figure_sheet == value
     assert [v for _t, v in main_gui.SHEETS] == ["none", "add", "replace"]
+    assert build_parser().parse_args(["x.pdf"]).figure_sheet == "replace"      # what the combo starts on
     assert main_gui.split_extra("--sheet-dpi 200") == ["--sheet-dpi", "200"]
     assert build_parser().parse_args(["x.pdf"] + main_gui.split_extra("--sheet-dpi 200")).sheet_dpi == 200
+
+
+def test_math_mode_combo_starts_on_ocr_only_and_equation_check_box_reaches_the_parser():
+    # the widgets live inside launch_gui: the combo starts on MATH_MODES[0] and the unchecked box adds --no-equation-check
+    assert main_gui.MATH_MODES[0][1] == "latex" == build_parser().parse_args(["x.pdf"]).math_mode
+    assert [v for _t, v in main_gui.MATH_MODES] == ["latex", "both", "image"]
+    for tokens in (["--no-equation-check"], main_gui.split_extra("--no-equation-check")):
+        assert build_parser().parse_args(["x.pdf"] + tokens).no_equation_check is True
+    assert build_parser().parse_args(["x.pdf"]).no_equation_check is False     # box checked: nothing is added

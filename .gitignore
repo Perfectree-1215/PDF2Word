@@ -55,6 +55,7 @@ Thumbs.db
 *.pdf
 *.docx
 ~$*.docx
+*.equations.html
 _asset-*/
 out/
 output/
