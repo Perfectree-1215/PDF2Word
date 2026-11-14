@@ -19,7 +19,7 @@ from .config import (CHAPTER_ASSET_TEMPLATE, CHAPTER_NAME_TEMPLATE, DOC_ASSET_TE
 from .lighten import CLUSTER_GAP, lighten_document
 from .inlinemath import inline_text_math
 from .mathocr import (LABEL_RE, TEXT_FLAGS, EquationOCR, EquationResult, build_engine, find_labels, hint_usable,
-                      label_text, render, tight_crop)
+                      holds_body_text, is_line_art, label_text, render, split_prose, tight_crop)
 from .metadata import PaperMeta, detect_doc_type, document_meta, resolve_metadata
 from .obsidian import block_id, build_frontmatter, ensure_title, image_link, postprocess, yaml_str
 from .outline import PageNumbers, Part, page_groups, parse_pages, part_document, read_outline, select_parts, split_children
@@ -680,11 +680,16 @@ class _DocContext:
     def _orphan_equation(self, page, eq: pymupdf.Rect) -> str:
         """A display equation drawn as graphics (no text layer, no layout box): OCR of the
         rendered region, numbered by a '(5.95)' label found to its right."""
+        region = (eq + (-2, -2, 2, 2)) & page.rect
+        if holds_body_text(page, region) or not is_line_art(page, region):
+            # body text where the 'equation' stands (a watermark's bounding box), or a photo the layout
+            # model did not box: no drawn equation
+            log.debug("  page %d: drawn cluster is body text or a picture, dropped", self.pdf_page(page))
+            return ""
         strip = pymupdf.Rect(eq.x1, eq.y0 - 3, page.rect.x1, eq.y1 + 3)
         # `box` keeps find_labels from taking the other column's numbers on two-column pages
         labels = find_labels(page, strip, box=eq) if strip.width > 10 else []
         label = labels[0][0] if labels else None
-        region = (eq + (-2, -2, 2, 2)) & page.rect
         result = self.conv.ocr.recognize_region(page, region, "", read=self.opt.math_mode != "image")
         if reads_as_text(result.latex):          # a word drawn as graphics (badge, wordmark), not an equation
             log.debug("  page %d: drawn cluster reads as text (%s), dropped", self.pdf_page(page), result.latex)
@@ -704,6 +709,21 @@ class _DocContext:
             # only an equation number: the equation itself is drawn as graphics (handled per page)
             self._consumed_labels.append(m.group(1))
             return ""
+        # body text the layout model put into the box (the sentence before an equation, a step heading -
+        # docs/issues/prose-in-formula-box.md) stays text, taken from the text layer; only the strips
+        # between such rows are read. A box without body text is one strip: itself.
+        out = []
+        for kind, part in split_prose(page, rect):
+            if kind == "text":
+                log.debug("  page %d: body text in a formula box kept as text: %s", self.pdf_page(page), part[:80])
+                self.stats["formula_text"] += 1
+                out.append(map_pua(part) + "\n")
+            else:
+                out.extend(self._equation_blocks(page, part))
+        return "\n" + "\n".join(out) + "\n"
+
+    def _equation_blocks(self, page, rect: pymupdf.Rect) -> list:
+        """The equation(s) of one strip of a formula box, each as a Markdown block."""
         # the number may sit outside the box, at the right margin (the strip reaches the page edge;
         # `box` keeps find_labels from taking the other column's numbers on two-column pages)
         labels = find_labels(page, pymupdf.Rect(rect.x0, rect.y0 - 3, page.rect.x1, rect.y1 + 3), box=rect)
@@ -721,7 +741,7 @@ class _DocContext:
             result = self.conv.ocr.recognize_region(page, region, hint, mask, read=self.opt.math_mode != "image")
             blocks.append(self._format_equation(result, label, "" if unverified else hint, page, region,
                                                 unverified=unverified))
-        return "\n" + "\n".join(blocks) + "\n"
+        return blocks
 
     @staticmethod
     def _split_regions(rect: pymupdf.Rect, labels: list, page) -> list:
@@ -1000,6 +1020,8 @@ class _DocContext:
 
     def _picture_as_equation(self, page, box: dict) -> Optional[str]:
         region = pymupdf.Rect(box["bbox"])
+        if holds_body_text(page, region) or not is_line_art(page, region):
+            return None                                   # lines of text (a caption) boxed as a picture, or a photo
         result = self.conv.ocr.recognize_region(page, region, "")
         if result.latex is None or reads_as_text(result.latex):
             return None                                   # probably a real picture after all

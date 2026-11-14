@@ -21,6 +21,7 @@ EQUATION_GAP = (14.0, 7.0)       # pt: terms closer than this form one display e
 ROW_REACH = 40.0                 # pt: an atom this close to a text line (horizontally) is inline
 SKIP_CLASSES = ("picture", "table", "formula", "page-header", "page-footer")
 LINK_BADGE_RATIO = 4.0           # a web link at most this many times a drawn cluster's area marks a badge
+LIGHT = 0.7                      # a path this light (0 black .. 1 white, opacity counted) is no ink: watermark, background
 _DOUBTFUL = re.compile(r"\\(mathcal|mathscr|mathfrak|S\b|boldmath|textstyle|scriptstyle|quad|qquad|stackrel|"
                        r"xrightarrow|xleftarrow|underline|operatorname\{\s*\}|mathrm\{\s*\})|\{\s*\}|"
                        r"\\[,;!:]|\\ |\\\\|&")
@@ -78,6 +79,31 @@ def _uri_links(page) -> list:
         return []
 
 
+def _lightness(color, opacity) -> Optional[float]:
+    """How light a path colour prints, 0 (black) .. 1 (white): its grey value blended with the white
+    page by its opacity. None = not painted (or a colour model other than grey / RGB)."""
+    if not color:
+        return None
+    c = [float(v) for v in color]
+    if len(c) == 3:
+        grey = 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]
+    elif len(c) == 1:
+        grey = c[0]
+    else:
+        return None
+    alpha = 1.0 if opacity is None else float(opacity)
+    return 1.0 - alpha * (1.0 - grey)
+
+
+def _is_ink(path: dict) -> bool:
+    """False for a path painted too lightly to be a glyph outline: fill and stroke both as light as
+    LIGHT or lighter - the grey 'ACCEPTED MANUSCRIPT' across a page, a white rectangle behind a
+    figure (docs/issues/watermark-as-equation.md). A path without colour information is ink."""
+    shades = [s for s in (_lightness(path.get("fill"), path.get("fill_opacity")),
+                          _lightness(path.get("color"), path.get("stroke_opacity"))) if s is not None]
+    return not shades or min(shades) < LIGHT
+
+
 def page_atoms(page, boxes: list, images=(), use_vector: bool = True) -> list:
     """Rects of glyph clusters (vector paths) and loose small images outside figures/tables."""
     pr = page.rect
@@ -94,6 +120,8 @@ def page_atoms(page, boxes: list, images=(), use_vector: bool = True) -> list:
             log.debug("page %d: %d vector paths, vector math skipped", page.number + 1, len(paths))
             paths = []
         for p in paths:
+            if not _is_ink(p):
+                continue                                   # watermark, white background
             r = pymupdf.Rect(p["rect"])
             if r.width > 0.45 * pr.width or r.height > 0.5 * pr.height:
                 continue                                   # rules, frames, backgrounds

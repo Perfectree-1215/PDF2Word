@@ -63,7 +63,7 @@ uv sync --locked --extra dev
 ## 4. 테스트
 
 ```bash
-.venv\Scripts\python -m pytest tests -q      # 222개, 약 8초, 모델·네트워크 불필요
+.venv\Scripts\python -m pytest tests -q      # 281개, 약 12초, 모델·네트워크 불필요
 ```
 
 파일마다 `python tests/test_basic.py` 처럼 단독 실행도 됩니다.
@@ -105,14 +105,14 @@ Theory Guide로 확인했습니다. 새 PC에서는 같은 종류의 PDF를 아�
 |---|---|
 | `main_gui.py` / `main_gui.bat` | tkinter GUI와 실행 스크립트. 인수가 있으면 CLI로 넘김. 창 없이 테스트되는 함수: `run_jobs`(작업 스레드 본체, 오류·SystemExit를 큐로), `parts_for`·`plan_for`(챕터·쪽 분할 계획, cli `plan_parts`와 같음), `split_extra`(추가 옵션 칸, 큰따옴표만), `load_settings`(gui.json `"v": 2`). bat는 **ASCII만, CRLF**(`.gitattributes`가 보장) |
 | `pdf2word/cli.py`, `config.py` | 옵션 정의(`Options` dataclass)와 명령줄. 새 옵션은 두 곳에 같이 넣고 README 옵션 표를 갱신 |
-| `pdf2word/converter.py` | 파이프라인. 같은 캡션의 picture 박스 병합(`_panel_groups`·`_merge_blocker`, `--figure-panels`). `pymupdf4llm.to_markdown(page_chunks=True)` 결과의 `page_boxes`를 `_DocContext.render_page`가 클래스별로 처리(formula/picture/caption/text…). 자산 폴더는 `_own_asset_dir`(md: 없음·빈 폴더·이번 .md가 참조하는 첫 이름, 아니면 `-2`·`-3`…; docx는 임시 폴더에서 만들고 지움) |
+| `pdf2word/converter.py` | 파이프라인. 같은 캡션의 picture 박스 병합(`_panel_groups`·`_merge_blocker`, `--figure-panels`). `pymupdf4llm.to_markdown(page_chunks=True)` 결과의 `page_boxes`를 `_DocContext.render_page`가 클래스별로 처리(formula/picture/caption/text…). 자산 폴더는 `_own_asset_dir`(md: 없음·빈 폴더·이번 .md가 참조하는 첫 이름, 아니면 `-2`·`-3`…; docx는 임시 폴더에서 만들고 지움). formula 박스는 본문 줄을 떼어 텍스트 레이어 글자로 내고 그 사이만 OCR(`_formula`·`_equation_blocks`), 도형·그림 수식 후보는 본문이 든 영역이나 사진이면 OCR 전에 버림(`_orphan_equation`·`_picture_as_equation`) |
 | `pdf2word/sheets.py` | 그림 모음 시트: 임베드 이미지를 토큰 예산(패치 4,784개) 안에서 높이순 선반 패킹(긴 변 2,000 px), `--figure-sheet` |
 | `pdf2word/eqcheck.py` | 수식 검토 페이지: `converter._run`이 `opt.equation_check`(기본 켬, `--no-equation-check`)일 때 `<출력 파일>.equations.html`을 만듦. 모든 디스플레이 수식의 쪽·번호·PDF 크롭(base64)·LaTeX·KaTeX 렌더링을 나란히 보이고, Edge·Chrome은 MD 파일을 연결해 해당 `$$` 블록에 제자리 저장, 다른 브라우저는 수정본 다운로드, Word는 보기만 |
-| `pdf2word/mathocr.py` | 수식 박스 렌더링 → 줄 분할 → `p2t`(Pix2Text MFR, 기본; 모델을 못 쓰면 rapid로 대체)/RapidLaTeXOCR/Claude → 검증(괄호·반복·텍스트 대조), 캐시. 깨진 텍스트 레이어 감지(`hint_usable`, `label_text`), 식 번호 찾기(`find_labels`, 2단 조판은 `box=` 필수), 레이어가 깨진 식의 배율 간 일치도 선택(`_recognize_by_agreement`, `normalize_latex`). 저장 crop은 `EquationOCR.DISPLAY_ZOOM`(2 = 144 dpi, 엔진이 읽는 배율과 별개), `recognize_region(read=False)`는 OCR 없이 crop만(`--math-mode image`). 캐시에는 보정(`fix_braces`·`looks_garbage`·`hint_fixes`) 뒤 결과가 들어가므로 그 규칙을 바꾸면 `OCRCache.VERSION`(현재 3)을 올림 |
+| `pdf2word/mathocr.py` | 수식 박스 렌더링 → 줄 분할 → `p2t`(Pix2Text MFR, 기본; 모델을 못 쓰면 rapid로 대체)/RapidLaTeXOCR/Claude → 검증(괄호·반복·텍스트 대조), 캐시. 깨진 텍스트 레이어 감지(`hint_usable`, `label_text`), 식 번호 찾기(`find_labels`, 2단 조판은 `box=` 필수), 레이어가 깨진 식의 배율 간 일치도 선택(`_recognize_by_agreement`, `normalize_latex`). 저장 crop은 `EquationOCR.DISPLAY_ZOOM`(2 = 144 dpi, 엔진이 읽는 배율과 별개), `recognize_region(read=False)`는 OCR 없이 crop만(`--math-mode image`). 캐시에는 보정(`fix_braces`·`looks_garbage`·`hint_fixes`) 뒤 결과가 들어가므로 그 규칙을 바꾸면 `OCRCache.VERSION`(현재 3)을 올림. "수식이 아닌 영역" 판정도 여기: 본문 줄(`is_prose_row`·`text_rows_in`·`split_prose`, 임계 `PROSE_SHARE`·`PROSE_WORDS`), 본문이 든 영역(`holds_body_text`), 사진(`ink_share`·`is_line_art`, `INK_MAX`) |
 | `pdf2word/mfr_onnx.py` | Pix2Text MFR 1.5 모델 파일 관리(내려받기·크기/sha256 검사·`PDF2WORD_MODELS`)와 onnxruntime 탐욕 디코딩 러너(torch 없음), 출력 후처리 |
 | `tools/bench_mathocr.py` | 한 PDF의 디스플레이 수식을 변환기와 같은 방법으로 찾아 `--engines`(기본 `p2t`) 엔진별 결과를 `report.md`/`report.html`(MathJax)/`results.json`으로 비교. PDF마다 `bench/<stem>/` 한 폴더에 `report.html`·`results.json`·크롭·`golden.json`(사람이 확정한 정답 LaTeX)을 두고, 같은 폴더의 `golden.json`과 정확 일치율·유사도를 냄(없으면 첫 실행이 틀을 만들고, `--rescore`는 OCR 없이 재채점). 골든 키는 (쪽, 라벨, `k`)이고 `k`는 같은 쪽·같은 라벨 안의 순번(번호 없는 식이 한 쪽에 여럿일 때), 옛 golden.json처럼 없으면 0 |
 | `pdf2word/inlinemath.py` | 텍스트 레이어의 인라인 수식(ρ_f, u_i, Ψ_⊥, \vec{v}) → `$...$`. 임계값은 파일 상단 상수(`SMALL_RATIO`, `SHIFT_RATIO`, `GLUE_GAP`, `ACCENT_RAISE`) |
-| `pdf2word/vectormath.py` | 벡터 도형으로 그려진 수식·기호(매뉴얼). 웹 링크 아래의 묶음은 배지로 보고 뺌(`_uri_links`, `LINK_BADGE_RATIO`; Elsevier CrossMark), OCR 결과가 글자 단어면 수식이 아님(`reads_as_text`) |
+| `pdf2word/vectormath.py` | 벡터 도형으로 그려진 수식·기호(매뉴얼). 웹 링크 아래의 묶음은 배지로 보고 뺌(`_uri_links`, `LINK_BADGE_RATIO`; Elsevier CrossMark), OCR 결과가 글자 단어면 수식이 아님(`reads_as_text`). 밝기 `LIGHT`(0.7) 이상인 경로(워터마크·흰 배경)는 `page_atoms`가 글리프로 보지 않음(`_is_ink`) |
 | `pdf2word/outline.py` | 책갈피 트리, 챕터 쪽 범위, 부분 문서 만들기, 인쇄 쪽 번호. 경계가 글줄을 지나면 `_snap_cut`이 그 줄 가장자리로 옮김(`_lost`로 양쪽 손실 비교). `parse_pages`·`select_parts`는 고른 것이 없으면 ValueError |
 | `pdf2word/lighten.py` | 이미지가 많은 쪽의 분석용 사본(레이아웃 분석 속도) |
 | `pdf2word/docx_out.py` | Markdown → Word(.docx), LaTeX → MathML → OMML |

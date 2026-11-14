@@ -280,7 +280,7 @@ print(r.docx_path, r.md_path, r.asset_dir, r.stats)
 
 ```bash
 uv sync --locked --extra dev          # 개발용 환경(.venv, Python 3.12, pytest 포함)
-.venv\Scripts\python -m pytest tests -q   # 테스트 222개 (합성 데이터만, 모델·네트워크 불필요)
+.venv\Scripts\python -m pytest tests -q   # 테스트 281개 (합성 데이터만, 모델·네트워크 불필요)
 pdf2word sample.pdf --pages 1-5 -v    # 실제 변환 확인
 ```
 

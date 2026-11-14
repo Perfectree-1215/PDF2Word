@@ -290,9 +290,9 @@ def test_a_word_badge_is_not_an_equation(tmp_path):
     doc = pymupdf.open()
     pg = doc.new_page(width=595, height=794)
     pg.insert_text((60, 400), "Body text far away from the badges.", fontsize=10)
-    sh = pg.new_shape()                                       # an outlined word: nine glyph bars, 7 pt high
-    for i in range(9):
-        sh.draw_rect(pymupdf.Rect(480 + 4 * i, 186, 483 + 4 * i, 193))
+    sh = pg.new_shape()                                       # an outlined word: nine glyph strokes, 7 pt high
+    for i in range(9):                                        # (1 pt of ink per 4 pt, as letters are; solid blocks read as a picture)
+        sh.draw_rect(pymupdf.Rect(480 + 4 * i, 186, 481 + 4 * i, 193))
     sh.finish(fill=(0, 0, 0), color=None)
     sh.commit()
     img = Image.new("RGB", (480, 120), "white")              # a word badge set as a picture, no caption

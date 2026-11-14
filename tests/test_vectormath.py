@@ -111,6 +111,37 @@ def test_link_badge_is_not_an_equation():
     assert len(find_math(page, boxes)[1]) == 1                     # a link far larger than it: kept
 
 
+def _watermark_page(fill):
+    """Body text with large letter outlines of colour `fill` across it (an 'ACCEPTED MANUSCRIPT'
+    watermark is light grey; the same shapes in black stand for glyph outlines of an equation)."""
+    doc = pymupdf.open()
+    page = doc.new_page(width=W, height=H)
+    for k in range(6):
+        page.insert_text((50, 100 + 14 * k), "body text of the paragraph under the watermark", fontsize=10)
+    for k in range(5):                                              # five big letters on a diagonal
+        page.draw_rect(pymupdf.Rect(80 + 45 * k, 250 - 30 * k, 115 + 45 * k, 290 - 30 * k), color=None, fill=fill, width=0)
+    return doc, page, [{"class": "text", "bbox": (50, 88, 450, 174), "pos": (0, 10)}]
+
+
+def test_paths_that_are_not_ink_are_no_glyphs():
+    # paper-03: a light grey (0.78) watermark across every page, paper-04: white rectangles behind
+    # two photos - neither is ink, so neither is an equation drawn as graphics
+    for fill, drawn in (((0, 0, 0), True), ((0.2, 0.2, 0.5), True), ((0.78, 0.78, 0.78), False), ((1, 1, 1), False)):
+        doc, page, boxes = _watermark_page(fill)
+        assert bool(page_atoms(page, boxes)) == drawn, fill
+        assert bool(find_math(page, boxes)[1]) == drawn, fill
+
+
+def test_a_path_is_ink_when_its_fill_or_its_stroke_is_dark():
+    doc = pymupdf.open()
+    page = doc.new_page(width=W, height=H)
+    page.draw_rect(pymupdf.Rect(100, 300, 130, 330), color=(0, 0, 0), fill=(1, 1, 1), width=1)       # dark outline, white inside
+    page.draw_rect(pymupdf.Rect(200, 300, 230, 330), color=(1, 1, 1), fill=(0, 0, 0), width=1)       # white outline, dark inside
+    page.draw_rect(pymupdf.Rect(300, 300, 330, 330), color=(0.9, 0.9, 0.9), fill=(0.8, 0.8, 0.8), width=1)   # light both ways
+    page.draw_rect(pymupdf.Rect(400, 300, 430, 330), color=None, fill=(0, 0, 0), width=0, fill_opacity=0.2)   # black at 20 %: light
+    assert sorted(round(a.x0) for a in page_atoms(page, [])) == [100, 200]
+
+
 def test_inline_latex_plausibility():
     tiny = pymupdf.Rect(0, 0, 9, 10)
     assert inline_latex_ok(r"\Omega", tiny)

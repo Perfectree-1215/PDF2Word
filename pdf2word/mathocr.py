@@ -29,6 +29,7 @@ import numpy as np
 import pymupdf
 from PIL import Image
 
+from .inlinemath import MATH_FONT_RE
 from .symbols import UNICODE_TO_LATEX
 from .utils import cache_dir
 
@@ -166,6 +167,154 @@ def find_labels(page: pymupdf.Page, rect, box=None) -> list:
         labels.append((m.group(1), lb))
     labels.sort(key=lambda t: t[1].y0)
     return labels
+
+
+# ----------------------------------------------------------------------------- body text in a formula box
+
+# The layout model files some body text as (part of) a formula: the sentence that introduces an
+# equation, the heading of a numbered step. Read as an equation it comes out as \mathrm{...} words,
+# and the text-layer check approves, because the letters match (docs/issues/prose-in-formula-box.md).
+# In the text layer such a row is words in an upright text font; a math row is italic variables,
+# math-font glyphs and at most the odd word ('otherwise', 'max'). Measured on 80 rows of two papers:
+# body text 0.73-0.95 with 2-8 words, math rows at most 0.38 unless they hold a single word.
+PROSE_SHARE = 0.6        # letters of the row's upright words / its non-blank characters
+PROSE_WORDS = 2          # upright words a body-text row has at least ('u min' under an integral is one)
+PROSE_GAP_MIN = 6.0      # pt: a strip without text between body-text rows is an equation only if this high and inked
+_PROSE_WORD = re.compile(r"[A-Za-z]{3,}")
+_RELATIONS = frozenset("=≈≠≤≥≡∝→←↔⇒⇔")   # = ≈ ≠ ≤ ≥ ≡ ∝ → ← ↔ ⇒ ⇔
+_ROW_FLAGS = TEXT_FLAGS & ~pymupdf.TEXT_PRESERVE_LIGATURES      # 'fluxes', not the fl ligature: the text is emitted
+
+
+def is_prose_row(spans) -> bool:
+    """Is one visual row of the text layer body text rather than math? `spans` = [(text, italic,
+    math font)]. Words of three or more letters count only in spans that are neither italic nor set
+    in a math font; a row that states a relation ('Nusselt number = hL/k') stays an equation."""
+    total = letters = words = 0
+    for text, italic, math_font in spans:
+        if any(ch in _RELATIONS for ch in text):
+            return False
+        total += sum(not ch.isspace() for ch in text)
+        if italic or math_font:
+            continue
+        found = _PROSE_WORD.findall(text)
+        words += len(found)
+        letters += sum(len(w) for w in found)
+    return words >= PROSE_WORDS and letters >= PROSE_SHARE * max(total, 1)
+
+
+def text_rows_in(page: pymupdf.Page, rect) -> list:
+    """The visual text rows inside `rect`, top to bottom: [{'rect', 'prose', 'text'}]. MuPDF lines
+    that overlap by half the height of the lower one share a row (as vectormath.text_rows): the
+    words of a justified line, a fraction's numerator beside its tall bracket."""
+    lines = []
+    try:
+        blocks = page.get_text("dict", clip=pymupdf.Rect(rect), flags=_ROW_FLAGS)["blocks"]
+    except Exception:
+        return []
+    for block in blocks:
+        if block.get("type") != 0:
+            continue
+        for line in block.get("lines", []):
+            # every span, blank ones too: some PDFs set each word and each space as a span of its own
+            if any(s["text"].strip() for s in line["spans"]):
+                lines.append((pymupdf.Rect(line["bbox"]), line["spans"]))
+    lines.sort(key=lambda t: (t[0].y0, t[0].x0))
+    rows: list = []
+    for lr, spans in lines:
+        if rows:
+            rr = rows[-1]["rect"]
+            if min(rr.y1, lr.y1) - max(rr.y0, lr.y0) >= 0.5 * min(rr.height, lr.height):
+                rows[-1]["rect"] = rr | lr
+                rows[-1]["lines"].append((lr, spans))
+                continue
+        rows.append({"rect": pymupdf.Rect(lr), "lines": [(lr, spans)]})
+    for row in rows:
+        row["lines"].sort(key=lambda t: t[0].x0)
+        spans = [s for _, line_spans in row["lines"] for s in line_spans]
+        row["prose"] = is_prose_row([(s["text"], bool(s["flags"] & 2), bool(MATH_FONT_RE.search(s.get("font") or "")))
+                                     for s in spans])
+        row["text"] = re.sub(r"\s+", " ", " ".join("".join(s["text"] for s in line_spans)
+                                                   for _, line_spans in row["lines"])).strip()
+    return rows
+
+
+def split_prose(page: pymupdf.Page, rect) -> list:
+    """A formula box cut at its body-text rows: [('text', str) | ('math', Rect)] top to bottom.
+
+    Consecutive body-text rows make one paragraph (the text layer as it is). What lies between
+    them, above the first and below the last is an equation region of the box's width when it
+    holds text rows, or - an equation drawn as graphics - when it is PROSE_GAP_MIN high and inked.
+    A box without a body-text row comes back whole, [('math', rect)]: nothing changes for it. So
+    does a box whose math rows would lose half their height to the cut (rows that interleave)."""
+    rect = pymupdf.Rect(rect)
+    whole = [("math", rect)]
+    rows = text_rows_in(page, rect)
+    if not any(r["prose"] for r in rows):
+        return whole
+    parts: list = []
+    top, pending, i = rect.y0, [], 0
+
+    def strip(bottom: float) -> bool:
+        """Append the strip top..bottom when it is an equation; False = the cut would damage one."""
+        band = pymupdf.Rect(rect.x0, max(top, rect.y0), rect.x1, min(bottom, rect.y1))
+        if pending:
+            if any(min(band.y1, r.y1) - max(band.y0, r.y0) < 0.5 * r.height for r in pending):
+                return False
+            parts.append(("math", band))
+        elif band.height >= PROSE_GAP_MIN and tight_crop(render(page, band, 2.0)) is not None:
+            parts.append(("math", band))
+        return True
+
+    while i < len(rows):
+        if not rows[i]["prose"]:
+            pending.append(rows[i]["rect"])
+            i += 1
+            continue
+        j = i
+        while j < len(rows) and rows[j]["prose"]:
+            j += 1
+        run = rows[i:j]
+        if not strip(min(r["rect"].y0 for r in run)):
+            return whole
+        parts.append(("text", " ".join(r["text"] for r in run)))
+        top, pending, i = max(r["rect"].y1 for r in run), [], j
+    if not strip(rect.y1):
+        return whole
+    return parts
+
+
+def holds_body_text(page: pymupdf.Page, rect) -> bool:
+    """Does the text layer inside `rect` hold a row of body text? An equation drawn as graphics or
+    set as a picture has no text layer where it stands, so such a region is none: a watermark's
+    bounding box, a figure's background, a caption boxed as a picture
+    (docs/issues/watermark-as-equation.md). At least half of the row's height must lie inside -
+    the last line of the paragraph above an equation only brushes its region."""
+    rect = pymupdf.Rect(rect)
+    for row in text_rows_in(page, rect):
+        rr = row["rect"]
+        if row["prose"] and min(rr.y1, rect.y1) - max(rr.y0, rect.y0) >= 0.5 * rr.height:
+            return True
+    return False
+
+
+INK_MAX = 0.5            # an equation is line art: of its ink box at most this share is ink
+
+
+def ink_share(img: Image.Image, thresh: int = 200) -> float:
+    """Share of ink pixels inside the ink bounding box of a grey image; 0.0 when it is blank."""
+    mask = ink_mask(img, thresh)
+    if not mask.any():
+        return 0.0
+    ys, xs = np.where(mask)
+    return float(mask[int(ys.min()):int(ys.max()) + 1, int(xs.min()):int(xs.max()) + 1].mean())
+
+
+def is_line_art(page: pymupdf.Page, rect) -> bool:
+    """False for a region inked too densely to be an equation - a photo, a shaded figure, a colour
+    bar (docs/issues/watermark-as-equation.md). Measured at the scale of the saved crop on the 106
+    equations of four papers: at most 0.25 of the ink box is ink; a photo the layout model did not
+    box: 0.57-0.66."""
+    return ink_share(render(page, rect, 2.0)) <= INK_MAX
 
 
 # ----------------------------------------------------------------------------- LaTeX hygiene
